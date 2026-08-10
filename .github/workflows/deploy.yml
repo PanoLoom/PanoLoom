@@ -10,6 +10,8 @@ on:
 
 jobs:
   deploy:
+    # Skips cleanly until the Cloudflare secrets are configured.
+    if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
