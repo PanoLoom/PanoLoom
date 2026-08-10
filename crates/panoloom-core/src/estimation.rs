@@ -402,6 +402,19 @@ pub fn homography_based_estimate(features: &[FeatureSet], graph: &MatchGraph) ->
     cameras
 }
 
+/// `warped_image_scale` = median camera focal (stitcher.cpp:517-528).
+/// Quirk preserved: for even counts the SUM is cast to f32 BEFORE halving.
+pub fn warped_image_scale(cameras: &[CameraParams]) -> f64 {
+    let mut focals: Vec<f64> = cameras.iter().map(|c| c.focal).collect();
+    focals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = focals.len();
+    if n % 2 == 1 {
+        focals[n / 2]
+    } else {
+        ((focals[n / 2 - 1] + focals[n / 2]) as f32 * 0.5) as f64
+    }
+}
+
 /// Symmetric 3x3 eigen-decomposition (cyclic Jacobi, f64), eigenvalues
 /// descending — the contract of `cv::eigen`. Returns (values, vectors as
 /// rows).

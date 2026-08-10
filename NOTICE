@@ -22,5 +22,11 @@ Affected areas include (list maintained as the port progresses):
   - bundle adjustment (bundle.rs) — modules/stitching/src/motion_estimators.cpp,
     modules/calib3d/src/{compat_ptsetreg,calibration}.cpp,
     modules/core/src/{lapack,matmul}.cpp
-  - (pending) exposure compensation      — modules/stitching/src/exposure_compensate.cpp
+  - spherical warping + remap (warp.rs) — modules/stitching/src/warpers.cpp,
+    stitching/detail/warpers_inl.hpp, modules/imgproc/src/imgwarp.cpp
+  - exposure compensation (exposure.rs) —
+    modules/stitching/src/exposure_compensate.cpp, modules/core/src/lu.impl
+  - feather blending (blend.rs) — modules/stitching/src/blenders.cpp,
+    modules/imgproc distanceTransform (DIST_L1)
   - (pending) graph-cut seam finding     — modules/stitching/src/seam_finders.cpp
+  - (pending) multiband blending         — modules/stitching/src/blenders.cpp

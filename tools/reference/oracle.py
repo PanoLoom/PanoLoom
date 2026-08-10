@@ -164,7 +164,7 @@ def main() -> None:
     if len(paths) < 2:
         raise SystemExit(f"need >= 2 images in {args.images}")
     out = args.out or Path(__file__).parent / "dumps" / args.images.name
-    for sub in ("features", "matches", "gains", "seams", "work"):
+    for sub in ("features", "matches", "gains", "seams", "work", "warped"):
         (out / sub).mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
@@ -279,6 +279,19 @@ def main() -> None:
         _, mask_w = warper.warp(mask, K, cameras[i].R, cv2.INTER_NEAREST, cv2.BORDER_CONSTANT)
         corners.append(corner); sizes.append((img_w.shape[1], img_w.shape[0]))
         warped.append(img_w); warped_masks.append(cv2.UMat(mask_w))
+
+    # Warp-stage parity fixtures: warped images/masks + corners BEFORE the
+    # seam finder mutates the masks in place — plus the seam-scale SOURCE
+    # images so the Rust warper can be fed identical pixels.
+    for i, (w_img, w_mask) in enumerate(zip(warped, warped_masks)):
+        cv2.imwrite(str(out / "warped" / f"src_{i:03d}.png"), seam_imgs[i])
+        cv2.imwrite(str(out / "warped" / f"img_{i:03d}.png"), w_img)
+        cv2.imwrite(str(out / "warped" / f"mask_{i:03d}.png"), np.asarray(w_mask.get()))
+    (out / "warped" / "corners.json").write_text(json.dumps({
+        "scale": warped_image_scale * seam_work_aspect,
+        "corners": corners,
+        "sizes": sizes,
+    }))
 
     compensator = cv2.detail_BlocksGainCompensator()
     compensator.feed(corners=corners, images=warped, masks=warped_masks)
