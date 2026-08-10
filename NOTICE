@@ -17,6 +17,10 @@ Affected areas include (list maintained as the port progresses):
     modules/core/src/lapack.cpp, opencv2/core/operations.hpp
   - FAST detector code is additionally covered by its original BSD notice
     (Copyright 2006, 2008 Edward Rosten), reproduced in fast.rs sources.
-  - (pending) bundle adjustment          — modules/stitching/src/motion_estimators.cpp
+  - rotation estimation, wave correction, graph utilities (estimation.rs,
+    camera.rs) — modules/stitching/src/{motion_estimators,autocalib,util}.cpp
+  - bundle adjustment (bundle.rs) — modules/stitching/src/motion_estimators.cpp,
+    modules/calib3d/src/{compat_ptsetreg,calibration}.cpp,
+    modules/core/src/{lapack,matmul}.cpp
   - (pending) exposure compensation      — modules/stitching/src/exposure_compensate.cpp
   - (pending) graph-cut seam finding     — modules/stitching/src/seam_finders.cpp

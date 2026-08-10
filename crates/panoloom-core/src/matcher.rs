@@ -161,8 +161,17 @@ pub fn match_pair(
     out.h = Some(res.h);
     out.confidence = match_confidence(out.num_inliers, out.matches.len());
 
-    // Re-estimate H from inliers only (matchers.cpp:449-474); the inlier
-    // mask and confidence keep their first-pass values.
+    // Re-estimate H from inliers only (matchers.cpp:449-474). OpenCV keeps
+    // the FIRST-pass inlier mask here, which is a real defect: when the
+    // matches cluster in a small region, the first H is weakly constrained
+    // and can absorb a grossly wrong correspondence; the refined H then no
+    // longer fits it, but the stale mask still feeds it to the bundle
+    // adjuster (least squares, no robust loss) and warps the whole result.
+    // DELIBERATE DEVIATION: re-validate the mask against the final H,
+    // pruning grossly inconsistent "inliers". The threshold is 3x the
+    // RANSAC tolerance (9px): this is gross-outlier hygiene — tight enough
+    // to kill wrong correspondences (observed: 3578px!), loose enough to
+    // keep marginal genuine inliers that a strict recheck would drop.
     if out.num_inliers >= NUM_MATCHES_THRESH2 {
         let src_in: Vec<[f32; 2]> = src
             .iter()
@@ -178,6 +187,22 @@ pub fn match_pair(
             .collect();
         if let Some(refined) = find_homography(&src_in, &dst_in) {
             out.h = Some(refined.h);
+            let thr_sqr = 81.0f32; // (3 * 3.0 px)^2
+            for (idx, keep) in out.inliers.iter_mut().enumerate() {
+                if !*keep {
+                    continue;
+                }
+                let (p, q) = (src[idx], dst[idx]);
+                let h = &refined.h;
+                let w = h[2][0] * p[0] as f64 + h[2][1] * p[1] as f64 + h[2][2];
+                let hx = (h[0][0] * p[0] as f64 + h[0][1] * p[1] as f64 + h[0][2]) / w;
+                let hy = (h[1][0] * p[0] as f64 + h[1][1] * p[1] as f64 + h[1][2]) / w;
+                let err = ((hx - q[0] as f64).powi(2) + (hy - q[1] as f64).powi(2)) as f32;
+                if err > thr_sqr {
+                    *keep = false;
+                    out.num_inliers -= 1;
+                }
+            }
         }
     }
     out

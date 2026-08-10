@@ -10,7 +10,10 @@
 //! This crate is wasm-agnostic: it also compiles natively for fast tests and
 //! benchmarks. Browser bindings live in `panoloom-wasm`.
 
+pub mod bundle;
+pub mod camera;
 pub mod cvmath;
+pub mod estimation;
 pub mod fast;
 pub mod homography;
 pub mod image;
