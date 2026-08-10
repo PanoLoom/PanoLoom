@@ -214,7 +214,10 @@ mod tests {
         };
 
         let json = serde_json::to_string(&project).unwrap();
-        assert!(json.contains("\"fileName\""), "wire format must be camelCase");
+        assert!(
+            json.contains("\"fileName\""),
+            "wire format must be camelCase"
+        );
         assert!(json.contains("\"hfovDeg\""));
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.images.len(), 1);

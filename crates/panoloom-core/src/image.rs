@@ -38,7 +38,9 @@ impl RgbaImage {
             .chunks_exact(4)
             .map(|px| {
                 let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
-                (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0.0, 255.0) as u8
+                (0.299 * r + 0.587 * g + 0.114 * b)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
             })
             .collect()
     }
