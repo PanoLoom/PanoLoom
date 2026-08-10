@@ -86,6 +86,28 @@ fn matn_f64(v: &serde_json::Value) -> Vec<f64> {
 // primitive parity
 // ---------------------------------------------------------------------
 
+/// Rodrigues uses libm trig (sin/cos/acos), whose last-ulp rounding differs
+/// between platforms (fixtures were generated on arm64; CI is x86_64).
+/// Pure-arithmetic kernels (SVD, norms, gemm) stay bit-exact; trig-based
+/// ones get a <= 2 ulp tolerance.
+fn assert_ulp_f64(got: f64, want: f64, max_ulp: u64, ctx: &str) {
+    let (a, b) = (got.to_bits() as i64, want.to_bits() as i64);
+    let ulp = (a - b).unsigned_abs();
+    assert!(
+        ulp <= max_ulp,
+        "{ctx}: got {got} want {want} ({ulp} ulp apart)"
+    );
+}
+
+fn assert_ulp_f32(got: f32, want: f32, max_ulp: u32, ctx: &str) {
+    let (a, b) = (got.to_bits() as i32, want.to_bits() as i32);
+    let ulp = (a - b).unsigned_abs();
+    assert!(
+        ulp <= max_ulp,
+        "{ctx}: got {got} want {want} ({ulp} ulp apart)"
+    );
+}
+
 #[test]
 fn rodrigues_m2v_f32_bit_exact() {
     let Some(cases) = fixture("rodrigues/m2v_f32.json") else {
@@ -95,11 +117,9 @@ fn rodrigues_m2v_f32_bit_exact() {
         let r = mat3_f32(&case["r"]);
         let want = vec_f32(&case["rvec"]);
         let got = cvnum::rodrigues_m2v_f32(&r);
-        assert_eq!(
-            got.map(f32::to_bits),
-            [want[0], want[1], want[2]].map(f32::to_bits),
-            "m2v case {n}: got {got:?} want {want:?}"
-        );
+        for k in 0..3 {
+            assert_ulp_f32(got[k], want[k], 2, &format!("m2v case {n} [{k}]"));
+        }
     }
 }
 
@@ -114,13 +134,7 @@ fn rodrigues_v2m_f64_bit_exact() {
         let got = cvnum::rodrigues_v2m(&[rvec[0], rvec[1], rvec[2]]);
         for i in 0..3 {
             for j in 0..3 {
-                assert_eq!(
-                    got[i][j].to_bits(),
-                    want[i][j].to_bits(),
-                    "v2m case {n} ({i},{j}): got {} want {}",
-                    got[i][j],
-                    want[i][j]
-                );
+                assert_ulp_f64(got[i][j], want[i][j], 2, &format!("v2m case {n} ({i},{j})"));
             }
         }
     }
