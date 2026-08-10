@@ -9,9 +9,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Secrets are not readable in job-level `if`, so a helper job exposes
+  # their presence as an output; deploy skips cleanly until they exist.
+  check-secrets:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: echo "configured=$([ -n "$TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   deploy:
-    # Skips cleanly until the Cloudflare secrets are configured.
-    if: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+    needs: check-secrets
+    if: needs.check-secrets.outputs.configured == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
