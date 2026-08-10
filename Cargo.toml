@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/panoloom-core", "crates/panoloom-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/PanoLoom/PanoLoom"
+authors = ["PanoLoom contributors"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# wasm binaries care about size too; thin-lto + opt-level 3 is a good default,
+# revisit with `opt-level = "s"` if the binary grows past ~2 MB.

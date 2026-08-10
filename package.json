@@ -1,0 +1,15 @@
+{
+  "name": "panoloom-monorepo",
+  "private": true,
+  "scripts": {
+    "build:wasm": "RUSTFLAGS='-C target-feature=+simd128' wasm-pack build crates/panoloom-wasm --target web --release --out-dir ../../packages/app/src/engine/pkg --out-name panoloom",
+    "dev": "pnpm build:wasm && pnpm --filter @panoloom/app dev",
+    "build": "pnpm build:wasm && pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

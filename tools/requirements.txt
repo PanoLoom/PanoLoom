@@ -1,0 +1,5 @@
+# The oracle is pinned to OpenCV 4.x: docs/pipeline.md and all parity
+# constants were derived from the 4.x sources. Bump only together with a
+# re-audit of docs/pipeline.md and regenerated dumps.
+numpy>=2.0
+opencv-python>=4.10,<5

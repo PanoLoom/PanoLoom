@@ -1,0 +1,23 @@
+/* Placeholder shell styles — the real design system lands with the app UI (M5). */
+:root {
+  color-scheme: dark;
+  --bg: #161618;
+  --panel: #1f1f22;
+  --border: #2c2c30;
+  --text: #d8d8dc;
+  --text-dim: #8b8b92;
+  --accent: #e8a33d;
+  --ok: #5fb26a;
+  --bad: #d4605f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}

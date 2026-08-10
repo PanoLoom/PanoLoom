@@ -1,0 +1,25 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Generated wasm package (built by `pnpm build:wasm`)
+packages/app/src/engine/pkg/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Test data (downloaded assets + generated sets are reproducible)
+tools/testdata/assets/
+tools/testdata/generated/
+tools/reference/dumps/
+
+# OS / editor
+.DS_Store
+*.local
+packages/app/e2e/*.png

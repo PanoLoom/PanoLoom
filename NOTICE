@@ -1,0 +1,15 @@
+PanoLoom
+Copyright 2026 PanoLoom contributors
+
+This product includes software developed as part of the PanoLoom project
+(https://github.com/PanoLoom/PanoLoom), licensed under the Apache License 2.0.
+
+Portions of the stitching engine (crates/panoloom-core) are Rust translations
+of algorithms and code from OpenCV (https://github.com/opencv/opencv),
+Copyright OpenCV team, licensed under the Apache License 2.0.
+Affected areas include (list maintained as the port progresses):
+  - (pending) ORB feature detection      — modules/features2d/src/orb.cpp
+  - (pending) pairwise matching + RANSAC — modules/stitching/src/matchers.cpp
+  - (pending) bundle adjustment          — modules/stitching/src/motion_estimators.cpp
+  - (pending) exposure compensation      — modules/stitching/src/exposure_compensate.cpp
+  - (pending) graph-cut seam finding     — modules/stitching/src/seam_finders.cpp
