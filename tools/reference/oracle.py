@@ -164,7 +164,7 @@ def main() -> None:
     if len(paths) < 2:
         raise SystemExit(f"need >= 2 images in {args.images}")
     out = args.out or Path(__file__).parent / "dumps" / args.images.name
-    for sub in ("features", "matches", "gains", "seams"):
+    for sub in ("features", "matches", "gains", "seams", "work"):
         (out / sub).mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
@@ -188,6 +188,11 @@ def main() -> None:
     seam_imgs = [scaled(im, seam_scale) for im in full_imgs]
 
     # --- stage 1: ORB features on work-scale images ---
+    # Lossless copies of the exact pixels the pipeline saw — Rust parity
+    # tests start from these (JPEG decoders differ between libraries).
+    for i, w in enumerate(work_imgs):
+        cv2.imwrite(str(out / "work" / f"img_{i:03d}.png"), w)
+
     orb = cv2.ORB_create(nfeatures=args.orb_features)
     features = cv2.detail.computeImageFeatures(orb, work_imgs)
     for i, f in enumerate(features):

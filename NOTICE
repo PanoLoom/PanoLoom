@@ -8,8 +8,15 @@ Portions of the stitching engine (crates/panoloom-core) are Rust translations
 of algorithms and code from OpenCV (https://github.com/opencv/opencv),
 Copyright OpenCV team, licensed under the Apache License 2.0.
 Affected areas include (list maintained as the port progresses):
-  - (pending) ORB feature detection      — modules/features2d/src/orb.cpp
-  - (pending) pairwise matching + RANSAC — modules/stitching/src/matchers.cpp
+  - ORB feature detection (orb.rs, fast.rs, orb_pattern.rs, cvmath.rs,
+    imgproc.rs) — modules/features2d/src/{orb,fast,fast_score,keypoint}.cpp,
+    modules/core/src/mathfuncs_core.simd.hpp
+  - pairwise matching (matcher.rs) — modules/stitching/src/matchers.cpp
+  - RANSAC homography + LM (homography.rs, rng.rs) —
+    modules/calib3d/src/{fundam,ptsetreg,levmarq}.cpp,
+    modules/core/src/lapack.cpp, opencv2/core/operations.hpp
+  - FAST detector code is additionally covered by its original BSD notice
+    (Copyright 2006, 2008 Edward Rosten), reproduced in fast.rs sources.
   - (pending) bundle adjustment          — modules/stitching/src/motion_estimators.cpp
   - (pending) exposure compensation      — modules/stitching/src/exposure_compensate.cpp
   - (pending) graph-cut seam finding     — modules/stitching/src/seam_finders.cpp

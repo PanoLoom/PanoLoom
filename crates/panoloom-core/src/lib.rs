@@ -10,7 +10,15 @@
 //! This crate is wasm-agnostic: it also compiles natively for fast tests and
 //! benchmarks. Browser bindings live in `panoloom-wasm`.
 
+pub mod cvmath;
+pub mod fast;
+pub mod homography;
 pub mod image;
+pub mod imgproc;
+pub mod matcher;
+pub mod orb;
+pub mod orb_pattern;
 pub mod project;
+pub mod rng;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
