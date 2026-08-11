@@ -146,7 +146,10 @@ export function App() {
     const c = new EngineClient();
     engine.current = c;
     c.onFatal = () => recoverEngine.current();
-    c.init().then(
+    // ?threads=N caps the pool (diagnostics / constrained machines).
+    const raw = new URLSearchParams(location.search).get("threads");
+    const cap = raw === null ? undefined : Number(raw);
+    c.init(Number.isFinite(cap) && cap! >= 0 ? cap : undefined).then(
       () => {
         setThreads(c.threads);
         setReady(true);

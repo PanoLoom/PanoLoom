@@ -56,8 +56,8 @@ export class EngineClient {
     return next;
   }
 
-  async init(): Promise<string> {
-    const r = await this.send({ type: "init" });
+  async init(maxThreads?: number): Promise<string> {
+    const r = await this.send({ type: "init", maxThreads });
     if (r.type !== "ready") throw new Error("unexpected response");
     this.version = r.version;
     this.threads = r.threads;

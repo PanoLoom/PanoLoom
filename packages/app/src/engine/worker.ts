@@ -17,13 +17,21 @@ function post(msg: WorkerResponse, transfer: Transferable[] = []) {
   (self as unknown as Worker).postMessage(msg, transfer);
 }
 
-async function boot(): Promise<{ version: string; threads: number }> {
-  if (typeof SharedArrayBuffer !== "undefined" && self.crossOriginIsolated) {
+async function boot(maxThreads?: number): Promise<{ version: string; threads: number }> {
+  // maxThreads 0 forces the single-thread engine (?threads=0 diagnostics).
+  if (
+    maxThreads !== 0 &&
+    typeof SharedArrayBuffer !== "undefined" &&
+    self.crossOriginIsolated
+  ) {
     try {
       const mod = await import("./pkg-mt/panoloom.js");
       const wasmUrl = (await import("./pkg-mt/panoloom_bg.wasm?url")).default;
       await mod.default({ module_or_path: wasmUrl });
-      const threads = Math.min(navigator.hardwareConcurrency || 4, 16);
+      const threads = Math.max(
+        1,
+        Math.min(maxThreads ?? navigator.hardwareConcurrency ?? 4, 16),
+      );
       await mod.initThreadPool(threads);
       engine = new mod.Engine() as unknown as Engine;
       return { version: mod.engine_version(), threads };
@@ -44,7 +52,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   try {
     switch (msg.type) {
       case "init": {
-        const { version, threads } = await boot();
+        const { version, threads } = await boot(msg.maxThreads);
         post({ type: "ready", version, threads });
         break;
       }

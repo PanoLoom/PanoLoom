@@ -1,7 +1,7 @@
 /** Messages between the UI and the engine worker. */
 
 export type WorkerRequest =
-  | { type: "init" }
+  | { type: "init"; maxThreads?: number }
   | {
       type: "addImage";
       id: number;

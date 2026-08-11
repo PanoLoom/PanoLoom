@@ -7,10 +7,22 @@ const engine =
 const browser = await engine.launch();
 const page = await browser.newPage();
 const errors = [];
-page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+page.on("pageerror", (e) => {
+  errors.push(`pageerror: ${e.message}`);
+  console.log("pageerror:", e.message);
+});
+page.on("console", (m) => {
+  const t = m.text();
+  if (t.includes("[engine]") || t.includes("mt engine")) console.log(" ", t.slice(0, 120));
+});
 
-await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+const threads = process.env.THREADS;
+await page.goto(
+  "http://localhost:4173" + (threads !== undefined ? `/?threads=${threads}` : ""),
+  { waitUntil: "networkidle" },
+);
 await page.waitForSelector("text=engine ready", { timeout: 30000 });
+console.log("status:", (await page.textContent(".bar-status"))?.trim());
 
 await page.click("text=try a sample set");
 await page.waitForSelector("text=8 shots", { timeout: 60000 });
