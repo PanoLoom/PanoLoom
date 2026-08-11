@@ -7,6 +7,7 @@ import type { Viewer as PsvViewer } from "@photo-sphere-viewer/core";
 import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { buildProject, parseProject, type ParsedProject } from "./lib/project";
+import { deriveProjectName, sanitizeProjectName } from "./lib/projectName";
 import { Viewer, type SphereCorrection } from "./components/Viewer";
 import { CpEditor } from "./components/CpEditor";
 import type { EngineControlPoint, OptimizeFlags } from "./engine/protocol";
@@ -98,6 +99,10 @@ export function App() {
   const files = useRef<Map<number, File>>(new Map());
   const [ready, setReady] = useState(false);
   const [threads, setThreads] = useState(0);
+  // Project name: derived from file names until the user renames it.
+  const [projectName, setProjectName] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const nameEdited = useRef(false);
   const [shots, setShots] = useState<Shot[]>([]);
   const [phase, setPhase] = useState<Phase>({ kind: "empty" });
   const [exporting, setExporting] = useState<ExportState>({ kind: "idle" });
@@ -151,6 +156,20 @@ export function App() {
     const c = bootEngine();
     return () => c?.dispose();
   }, [bootEngine]);
+
+  // Keep the derived project name in sync with the shots until the user
+  // renames it (then it's theirs).
+  useEffect(() => {
+    if (shots.length === 0) {
+      nameEdited.current = false;
+      setProjectName("");
+      setEditingName(false);
+      return;
+    }
+    if (!nameEdited.current) {
+      setProjectName(deriveProjectName(shots.map((s) => s.fileName)));
+    }
+  }, [shots]);
 
   useEffect(() => {
     if (phase.kind !== "aligning") return;
@@ -235,6 +254,9 @@ export function App() {
       if (proj) {
         try {
           setPendingProject(parseProject(await proj.text()));
+          // The project file's own name IS the project name.
+          setProjectName(sanitizeProjectName(proj.name.replace(/\.panoproj$/i, "")));
+          nameEdited.current = true;
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -330,14 +352,14 @@ export function App() {
       );
       await saveBlob(
         new Blob([doc], { type: "application/json" }),
-        "panorama.panoproj",
+        `${projectName || "panorama"}.panoproj`,
         "PanoLoom project",
         { "application/json": [".panoproj"] },
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [shots, cps]);
+  }, [shots, cps, projectName]);
 
   const runAlign = useCallback(async () => {
     setError(null);
@@ -444,13 +466,13 @@ export function App() {
         croppedAreaLeftPixels: result.left,
         croppedAreaTopPixels: result.top,
       });
-      await saveJpeg(withXmp, "panoloom-360.jpg");
+      await saveJpeg(withXmp, `${projectName || "panorama"}.jpg`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setExporting({ kind: "idle" });
     }
-  }, [phase.kind, shots, exportWidth]);
+  }, [phase.kind, shots, exportWidth, projectName]);
 
   /** Open the CP editor, generating points on first use. */
   const openCpEditor = useCallback(async () => {
@@ -554,6 +576,33 @@ export function App() {
         <span className="wordmark">
           Pano<em>Loom</em>
         </span>
+        {shots.length > 0 &&
+          (editingName ? (
+            <input
+              className="project-name-input"
+              autoFocus
+              defaultValue={projectName}
+              maxLength={80}
+              onFocus={(e) => e.target.select()}
+              onBlur={(e) => {
+                setProjectName(sanitizeProjectName(e.target.value));
+                nameEdited.current = true;
+                setEditingName(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") setEditingName(false);
+              }}
+            />
+          ) : (
+            <button
+              className="project-name"
+              title="rename project — used for saved files"
+              onClick={() => setEditingName(true)}
+            >
+              {projectName}
+            </button>
+          ))}
         <span className="bar-status">
           {ready
             ? threads > 0

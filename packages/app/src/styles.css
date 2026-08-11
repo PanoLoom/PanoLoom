@@ -88,6 +88,48 @@ button {
   color: var(--thread);
 }
 
+.project-name {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: text;
+  max-width: 260px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-name:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.project-name::after {
+  content: " ✎";
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.project-name-input {
+  background: var(--bg);
+  border: 1px solid var(--thread-dim);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 8px;
+  width: 220px;
+}
+
+.project-name-input:focus {
+  outline: none;
+}
+
 .bar-status {
   color: var(--text-dim);
   font-family: var(--font-mono);
@@ -697,6 +739,12 @@ button {
 
   .wordmark {
     font-size: 15px;
+  }
+
+  .project-name,
+  .project-name-input {
+    max-width: 110px;
+    width: auto;
   }
 
   .align-btn {

@@ -39,12 +39,24 @@ await page.click("button.align-btn:not(.ghost)");
 await page.waitForSelector(".viewer canvas", { timeout: 300000 });
 console.log("stitched", jpegs.length, "shots");
 
+// The project name derives from the file names and is click-to-rename;
+// it becomes the saved file name.
+const derived = await page.textContent(".project-name");
+console.log("derived name:", derived?.trim());
+if (!derived?.includes("img")) throw new Error(`unexpected name ${derived}`);
+await page.click(".project-name");
+await page.fill(".project-name-input", "my panorama");
+await page.keyboard.press("Enter");
+
 const downloadP = page.waitForEvent("download", { timeout: 30000 });
 await page.click('button:has-text("Save Project")');
 const download = await downloadP;
+if (download.suggestedFilename() !== "my panorama.panoproj") {
+  throw new Error(`saved as ${download.suggestedFilename()}`);
+}
 const projPath = path.join(here, "m8-project.panoproj");
 await download.saveAs(projPath);
-console.log("saved project");
+console.log("saved project as", download.suggestedFilename());
 
 // Fresh page: open the project, re-select the photos, expect instant preview.
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
@@ -60,6 +72,12 @@ await page.setInputFiles('input[type="file"]', jpegs);
 await page.waitForSelector(".viewer canvas", { timeout: 120000 });
 const dt = (Date.now() - t0) / 1000;
 console.log(`restored preview in ${dt.toFixed(1)}s (no align)`);
+
+// The loaded project file's name becomes the project name.
+const restored = await page.textContent(".project-name");
+if (!restored?.includes("m8-project")) {
+  throw new Error(`project name not restored: ${restored}`);
+}
 
 if (errors.length) {
   console.log("PAGE ERRORS:", errors);
