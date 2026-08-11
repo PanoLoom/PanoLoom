@@ -21,6 +21,11 @@ your machine via Rust compiled to WebAssembly, hosted as a static site.
 - **Orientation editing**: recenter and level the finished panorama (numeric
   yaw/pitch/roll or "center on current view") with an instant live preview; Apply bakes
   the rotation into the cameras so the export matches exactly.
+- **Control points & lens optimization**: a PTGui-style point editor (auto points from
+  feature matches, add/delete by clicking, error-sorted list) drives a
+  Levenberg–Marquardt optimizer over rotations, field of view, and a PanoTools radial
+  lens model (a·b·c, optional center shift) — recovers synthetic ground truth to
+  machine precision. All warping is distortion-aware once a lens is fitted.
 - **Full-resolution export**: composed in memory-bounded horizontal bands (a 17,000 px
   DJI panorama fits comfortably in wasm's address space), JPEG-encoded in wasm, stamped
   with GPano XMP (Photo Sphere) metadata. Partial panoramas export cropped to their
@@ -99,6 +104,7 @@ node packages/app/e2e/m6-adjust.mjs     # live orientation preview == baked resu
 node packages/app/e2e/m7-export.mjs     # cropped full-res export + GPano validation
 node packages/app/e2e/m8-project.mjs    # project save/load round-trip
 node packages/app/e2e/m8-sample.mjs     # bundled sample set
+node packages/app/e2e/m9-cp-editor.mjs  # control points + lens optimize
 ```
 
 Stage-level profiling of the engine on a directory of registration-scale PNGs:
@@ -109,9 +115,8 @@ PANOLOOM_TIMING=1 cargo run --release --example profile_align -- <dir> [priors.j
 
 ## Roadmap
 
-v1.x: control-point editor and optimizer variable control → masking & seam steering →
-AKAZE/SIFT for low-texture scenes. Later: RAW input, HDR/exposure fusion, WebGPU
-compositing, 16-bit TIFF, more projections.
+v1.x: masking & seam steering → AKAZE/SIFT for low-texture scenes. Later: RAW input,
+HDR/exposure fusion, WebGPU compositing, 16-bit TIFF, more projections.
 
 ## License
 

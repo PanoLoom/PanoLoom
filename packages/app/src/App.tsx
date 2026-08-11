@@ -8,6 +8,8 @@ import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { buildProject, parseProject, type ParsedProject } from "./lib/project";
 import { Viewer, type SphereCorrection } from "./components/Viewer";
+import { CpEditor } from "./components/CpEditor";
+import type { EngineControlPoint, OptimizeFlags } from "./engine/protocol";
 
 type Shot = Omit<DecodedImage, "rgba"> & {
   dropped: boolean;
@@ -110,6 +112,9 @@ export function App() {
   const [pendingProject, setPendingProject] = useState<ParsedProject | null>(
     null,
   );
+  // Control points (registration coords); null until first generated.
+  const [cps, setCps] = useState<EngineControlPoint[] | null>(null);
+  const [cpEditorOpen, setCpEditorOpen] = useState(false);
   // Orientation adjustment (degrees) — previewed live, baked on Apply.
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjust, setAdjust] = useState({ yaw: 0, pitch: 0, roll: 0 });
@@ -198,6 +203,7 @@ export function App() {
         const result = await engine.current!.importAlignment(
           project.alignmentJson,
         );
+        if (project.cps.length > 0) setCps(project.cps);
         setShots((s) =>
           s.map((shot) => ({
             ...shot,
@@ -320,6 +326,7 @@ export function App() {
         alignment,
         workScale.current ?? 1,
         engine.current!.version,
+        cps ?? [],
       );
       await saveBlob(
         new Blob([doc], { type: "application/json" }),
@@ -330,11 +337,13 @@ export function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [shots]);
+  }, [shots, cps]);
 
   const runAlign = useCallback(async () => {
     setError(null);
     setElapsed(0);
+    setCps(null);
+    setCpEditorOpen(false);
     setPhase({ kind: "aligning", startedAt: Date.now() });
     try {
       const result = await engine.current!.align();
@@ -443,6 +452,35 @@ export function App() {
     }
   }, [phase.kind, shots, exportWidth]);
 
+  /** Open the CP editor, generating points on first use. */
+  const openCpEditor = useCallback(async () => {
+    setError(null);
+    try {
+      if (!cps) {
+        setCps(await engine.current!.autoControlPoints(12));
+      }
+      setCpEditorOpen(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [cps]);
+
+  /** Run the CP optimizer, then re-render the preview with the result. */
+  const optimizeCps = useCallback(
+    async (points: EngineControlPoint[], flags: OptimizeFlags) => {
+      const report = await engine.current!.optimizeCps(points, flags);
+      setPhase({ kind: "previewing" });
+      try {
+        const p = await engine.current!.renderPreview(4096);
+        setPhase({ kind: "preview", ...p });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      return report;
+    },
+    [],
+  );
+
   /** Bake the adjustment into the cameras and re-render the preview. */
   const applyAdjust = useCallback(async () => {
     if (phase.kind !== "preview") return;
@@ -474,6 +512,8 @@ export function App() {
     try {
       await engine.current!.removeImage(id);
       files.current.delete(id);
+      setCps(null);
+      setCpEditorOpen(false);
       setShots((s) => {
         const next = s.filter((shot) => shot.id !== id);
         setPhase(next.length > 0 ? { kind: "loaded" } : { kind: "empty" });
@@ -540,6 +580,16 @@ export function App() {
         )}
         {phase.kind === "preview" && (
           <>
+            <button
+              className={`align-btn ghost${cpEditorOpen ? " active" : ""}`}
+              disabled={busy}
+              onClick={() =>
+                cpEditorOpen ? setCpEditorOpen(false) : void openCpEditor()
+              }
+              title="Inspect and edit control points; optimize lens distortion"
+            >
+              Points
+            </button>
             <button
               className={`align-btn ghost${adjustOpen ? " active" : ""}`}
               disabled={busy}
@@ -761,6 +811,24 @@ export function App() {
                 : "rendering preview"}
             </div>
           </div>
+        )}
+
+        {cpEditorOpen && cps && (
+          <CpEditor
+            shots={shots
+              .filter((s) => !s.dropped)
+              .map((s) => ({
+                id: s.id,
+                fileName: s.fileName,
+                width: s.width,
+                height: s.height,
+              }))}
+            files={files.current}
+            cps={cps}
+            onCpsChange={setCps}
+            optimize={optimizeCps}
+            onClose={() => setCpEditorOpen(false)}
+          />
         )}
 
         {phase.kind !== "preview" && (

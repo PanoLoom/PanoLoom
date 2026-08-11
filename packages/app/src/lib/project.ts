@@ -44,11 +44,23 @@ export interface ShotMeta {
   focalLength35mm: number | null;
 }
 
+export interface CpLike {
+  id: number;
+  imgA: number;
+  imgB: number;
+  xA: number;
+  yA: number;
+  xB: number;
+  yB: number;
+  errorPx?: number | null;
+}
+
 export function buildProject(
   shots: ShotMeta[],
   alignmentJson: string,
   workScale: number,
   engineVersion: string,
+  cps: CpLike[] = [],
 ): string {
   const alignment = JSON.parse(alignmentJson) as EngineAlignment;
   const byId = new Map(alignment.images.map((ai) => [ai.id, ai]));
@@ -80,7 +92,18 @@ export function buildProject(
   const doc: PanoloomProject = {
     version: PROJECT_FORMAT_VERSION,
     images,
-    controlPoints: [],
+    // .panoproj stores CPs in ORIGINAL image coordinates.
+    controlPoints: cps.map((cp) => ({
+      id: cp.id,
+      imgA: cp.imgA,
+      imgB: cp.imgB,
+      xA: cp.xA / workScale,
+      yA: cp.yA / workScale,
+      xB: cp.xB / workScale,
+      yB: cp.yB / workScale,
+      kind: "normal" as const,
+      errorPx: cp.errorPx ?? null,
+    })),
     optimizer: {
       optimizeYawPitchRoll: true,
       optimizeHfov: false,
@@ -111,6 +134,8 @@ export interface ParsedProject {
   entries: { id: number; fileName: string; width: number; height: number }[];
   alignmentJson: string;
   workScale: number;
+  /** Control points converted to REGISTRATION coordinates. */
+  cps: CpLike[];
 }
 
 export function parseProject(text: string): ParsedProject {
@@ -129,6 +154,7 @@ export function parseProject(text: string): ParsedProject {
   if (!Array.isArray(doc.images) || doc.images.length === 0) {
     throw new Error("project lists no images");
   }
+  const ws = doc.panoloom.workScale;
   return {
     entries: doc.images.map((im) => ({
       id: im.id,
@@ -137,6 +163,16 @@ export function parseProject(text: string): ParsedProject {
       height: im.height,
     })),
     alignmentJson: JSON.stringify(doc.panoloom.alignment),
-    workScale: doc.panoloom.workScale,
+    workScale: ws,
+    cps: (doc.controlPoints ?? []).map((cp) => ({
+      id: cp.id,
+      imgA: cp.imgA,
+      imgB: cp.imgB,
+      xA: cp.xA * ws,
+      yA: cp.yA * ws,
+      xB: cp.xB * ws,
+      yB: cp.yB * ws,
+      errorPx: cp.errorPx ?? null,
+    })),
   };
 }

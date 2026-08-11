@@ -76,6 +76,18 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         post({ type: "oriented" });
         break;
       }
+      case "autoControlPoints": {
+        const cps = JSON.parse(engine!.auto_control_points(msg.maxPerPair));
+        post({ type: "controlPoints", cps });
+        break;
+      }
+      case "optimizeCps": {
+        const report = JSON.parse(
+          engine!.optimize_cps(JSON.stringify(msg.cps), JSON.stringify(msg.flags)),
+        );
+        post({ type: "optimized", report });
+        break;
+      }
       case "exportAlignment": {
         post({ type: "alignmentExported", alignment: engine!.export_alignment() });
         break;

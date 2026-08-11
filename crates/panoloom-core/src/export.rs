@@ -47,6 +47,7 @@ pub struct Exporter {
     cameras: Vec<CameraParams>,
     /// K multiplier per aligned image for FULL-RES sources.
     k_mul: Vec<f64>,
+    lens: crate::lens::LensParams,
     entries: Vec<EntryGeom>,
     gain_maps: Vec<GainMap>,
     seam_masks_dilated: Vec<GrayImage>,
@@ -120,6 +121,13 @@ impl Exporter {
         for &(i, dup) in &stage.entries {
             let (_, fw, fh) = full_sizes.iter().find(|(id, _, _)| *id == ids[i]).unwrap();
             let k = camera_k_scaled(&cameras[i], k_mul[i]);
+            warper.set_lens(
+                alignment.lens,
+                k[0][2] as f64,
+                k[1][2] as f64,
+                *fw as f64,
+                *fh as f64,
+            );
             let (x, y, w, h) = warper.warp_roi(*fw as usize, *fh as usize, &k, &cameras[i].r);
             entries.push(EntryGeom {
                 src_idx: i,
@@ -232,6 +240,7 @@ impl Exporter {
             ids,
             cameras,
             k_mul,
+            lens: alignment.lens,
             entries,
             gain_maps: stage.compensator.gain_maps().to_vec(),
             seam_masks_dilated,
@@ -312,6 +321,13 @@ impl Exporter {
             }
 
             let k = camera_k_scaled(&self.cameras[i], self.k_mul[i]);
+            warper.set_lens(
+                self.lens,
+                k[0][2] as f64,
+                k[1][2] as f64,
+                src.width as f64,
+                src.height as f64,
+            );
             let (_, w_img) = warper.warp_rows(
                 src,
                 &k,

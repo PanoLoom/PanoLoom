@@ -59,6 +59,9 @@ pub struct SphericalWarper {
     rinv: [f32; 9],
     r_kinv: [f32; 9],
     k_rinv: [f32; 9],
+    /// Lens distortion applied in SOURCE pixel space; None = pure pinhole
+    /// (the bit-exact OpenCV-parity path).
+    lens: Option<(crate::lens::LensParams, f64, f64, f64, f64)>, // (params, cx, cy, w, h)
 }
 
 fn mul3f(a: &Mat3f, b: &Mat3f) -> Mat3f {
@@ -90,6 +93,38 @@ impl SphericalWarper {
             rinv: [0.0; 9],
             r_kinv: [0.0; 9],
             k_rinv: [0.0; 9],
+            lens: None,
+        }
+    }
+
+    /// Enables lens distortion for subsequent warps of a `w` x `h` source
+    /// whose principal point is (cx, cy). Zero params disable it (keeps
+    /// the exact pinhole sampling path).
+    pub fn set_lens(&mut self, params: crate::lens::LensParams, cx: f64, cy: f64, w: f64, h: f64) {
+        self.lens = (!params.is_zero()).then_some((params, cx, cy, w, h));
+    }
+
+    /// Ideal pinhole pixel -> actual (distorted) source pixel.
+    #[inline]
+    pub fn to_source_px(&self, x: f32, y: f32) -> (f32, f32) {
+        match &self.lens {
+            None => (x, y),
+            Some((p, cx, cy, w, h)) => {
+                let (dx, dy) = p.distort(x as f64, y as f64, *cx, *cy, *w, *h);
+                (dx as f32, dy as f32)
+            }
+        }
+    }
+
+    /// Actual (distorted) source pixel -> ideal pinhole pixel.
+    #[inline]
+    pub fn to_ideal_px(&self, x: f32, y: f32) -> (f32, f32) {
+        match &self.lens {
+            None => (x, y),
+            Some((p, cx, cy, w, h)) => {
+                let (ux, uy) = p.undistort(x as f64, y as f64, *cx, *cy, *w, *h);
+                (ux as f32, uy as f32)
+            }
         }
     }
 
@@ -175,16 +210,22 @@ impl SphericalWarper {
                 *br_uf = br_uf.max(u);
                 *br_vf = br_vf.max(v);
             };
+        // Border points are ACTUAL image pixels; the forward map wants
+        // ideal pinhole coordinates (identity without lens distortion).
+        let fwd = |x: f32, y: f32| {
+            let (xi, yi) = self.to_ideal_px(x, y);
+            self.map_forward(xi, yi)
+        };
         for x in 0..src_w {
-            let (u, v) = self.map_forward(x as f32, 0.0);
+            let (u, v) = fwd(x as f32, 0.0);
             upd(u, v, &mut tl_uf, &mut tl_vf, &mut br_uf, &mut br_vf);
-            let (u, v) = self.map_forward(x as f32, (src_h - 1) as f32);
+            let (u, v) = fwd(x as f32, (src_h - 1) as f32);
             upd(u, v, &mut tl_uf, &mut tl_vf, &mut br_uf, &mut br_vf);
         }
         for y in 0..src_h {
-            let (u, v) = self.map_forward(0.0, y as f32);
+            let (u, v) = fwd(0.0, y as f32);
             upd(u, v, &mut tl_uf, &mut tl_vf, &mut br_uf, &mut br_vf);
-            let (u, v) = self.map_forward((src_w - 1) as f32, y as f32);
+            let (u, v) = fwd((src_w - 1) as f32, y as f32);
             upd(u, v, &mut tl_uf, &mut tl_vf, &mut br_uf, &mut br_vf);
         }
 
@@ -248,6 +289,7 @@ impl SphericalWarper {
             for du in 0..dw {
                 let (sx, sy) =
                     this.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
+                let (sx, sy) = this.to_source_px(sx, sy);
                 sample(
                     src,
                     sx,
@@ -289,6 +331,7 @@ impl SphericalWarper {
             for du in 0..dw {
                 let (sx, sy) =
                     this.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
+                let (sx, sy) = this.to_source_px(sx, sy);
                 sample(
                     src,
                     sx,

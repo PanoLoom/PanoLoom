@@ -92,6 +92,25 @@ export class EngineClient {
     if (resp.type !== "oriented") throw new Error("unexpected response");
   }
 
+  /** Feature-derived control points (registration coords). */
+  async autoControlPoints(
+    maxPerPair: number,
+  ): Promise<import("./protocol").EngineControlPoint[]> {
+    const r = await this.send({ type: "autoControlPoints", maxPerPair });
+    if (r.type !== "controlPoints") throw new Error("unexpected response");
+    return r.cps;
+  }
+
+  /** Optimize the alignment against control points; mutates engine state. */
+  async optimizeCps(
+    cps: import("./protocol").EngineControlPoint[],
+    flags: import("./protocol").OptimizeFlags,
+  ): Promise<import("./protocol").OptimizeReport> {
+    const r = await this.send({ type: "optimizeCps", cps, flags });
+    if (r.type !== "optimized") throw new Error("unexpected response");
+    return r.report;
+  }
+
   /** Frees an in-progress export session. */
   async cancelExport(): Promise<void> {
     const r = await this.send({ type: "cancelExport" });

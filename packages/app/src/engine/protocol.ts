@@ -13,6 +13,8 @@ export type WorkerRequest =
   | { type: "removeImage"; id: number }
   | { type: "align" }
   | { type: "orient"; r: number[] }
+  | { type: "autoControlPoints"; maxPerPair: number }
+  | { type: "optimizeCps"; cps: EngineControlPoint[]; flags: OptimizeFlags }
   | { type: "exportAlignment" }
   | { type: "importAlignment"; alignment: string }
   | { type: "preview"; maxWidth: number }
@@ -45,6 +47,32 @@ export interface ExportPlan {
   bands: { y0: number; y1: number; needed: number[] }[];
 }
 
+/** Control point in REGISTRATION-scale pixel coordinates. */
+export interface EngineControlPoint {
+  id: number;
+  imgA: number;
+  imgB: number;
+  xA: number;
+  yA: number;
+  xB: number;
+  yB: number;
+  errorPx?: number | null;
+}
+
+export interface OptimizeFlags {
+  focal: boolean;
+  distortion: boolean;
+  shift: boolean;
+}
+
+export interface OptimizeReport {
+  rmsPxBefore: number;
+  rmsPx: number;
+  iterations: number;
+  cpErrorsPx: number[];
+  lens: { a: number; b: number; c: number; d: number; e: number };
+}
+
 export interface AlignResult {
   aligned: number[];
   /** Placed via shooting-rig pose metadata (too few features to match). */
@@ -59,6 +87,8 @@ export type WorkerResponse =
   | { type: "imageRemoved"; id: number }
   | { type: "aligned"; result: AlignResult }
   | { type: "oriented" }
+  | { type: "controlPoints"; cps: EngineControlPoint[] }
+  | { type: "optimized"; report: OptimizeReport }
   | { type: "alignmentExported"; alignment: string }
   | { type: "exportCancelled" }
   | {

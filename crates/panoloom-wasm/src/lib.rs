@@ -337,6 +337,37 @@ impl Engine {
         Ok(())
     }
 
+    /// Feature-match derived control points (registration-scale coords),
+    /// as a JSON array. Recomputes features/matches on the current images.
+    pub fn auto_control_points(&self, max_per_pair: u32) -> String {
+        let cps = panoloom_core::cp::auto_control_points(&self.sources, max_per_pair as usize);
+        serde_json::to_string(&cps).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Optimizes the alignment against control points (JSON array, coords
+    /// at registration scale) with PTGui-style variable flags. Returns the
+    /// report JSON (rms before/after, per-CP errors, fitted lens).
+    pub fn optimize_cps(&mut self, cps_json: &str, flags_json: &str) -> Result<String, JsError> {
+        let alignment = self
+            .alignment
+            .as_mut()
+            .ok_or_else(|| JsError::new("align() has not succeeded yet"))?;
+        let cps: Vec<panoloom_core::cp::ControlPoint> = serde_json::from_str(cps_json)
+            .map_err(|e| JsError::new(&format!("bad control points: {e}")))?;
+        let flags: panoloom_core::optimizer::OptimizeFlags = serde_json::from_str(flags_json)
+            .map_err(|e| JsError::new(&format!("bad flags: {e}")))?;
+        let dims: std::collections::HashMap<u32, (u32, u32)> = self
+            .sources
+            .iter()
+            .map(|s| (s.id, (s.rgb.width as u32, s.rgb.height as u32)))
+            .collect();
+        let report =
+            panoloom_core::optimizer::optimize_control_points(alignment, &cps, &dims, &flags)
+                .map_err(|e| JsError::new(&e))?;
+        self.exporter = None;
+        serde_json::to_string(&report).map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Serializes the current alignment (exact float round-trip) for
     /// project save. Requires a prior successful `align()`.
     pub fn export_alignment(&self) -> Result<String, JsError> {

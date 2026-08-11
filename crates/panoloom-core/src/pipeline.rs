@@ -55,6 +55,11 @@ pub struct Alignment {
     /// ids that could not be matched into the panorama (and had no prior).
     pub dropped: Vec<u32>,
     pub warped_image_scale: f64,
+    /// Shared lens distortion (all shots assumed same lens); zero until
+    /// the control-point optimizer fits it. `default` keeps old projects
+    /// loading.
+    #[serde(default)]
+    pub lens: crate::lens::LensParams,
 }
 
 /// Native-only stage timing (Instant is unavailable on wasm32-unknown-
@@ -261,6 +266,7 @@ pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
         images,
         dropped: still_dropped,
         warped_image_scale: scale,
+        lens: crate::lens::LensParams::default(),
     })
 }
 
@@ -475,6 +481,13 @@ pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> Seam
         );
         let small = resize_rgb(src, sw, sh);
         let k = camera_k_scaled(&ai.camera, seam_mul);
+        seam_warper.set_lens(
+            alignment.lens,
+            k[0][2] as f64,
+            k[1][2] as f64,
+            sw as f64,
+            sh as f64,
+        );
         let (tl, w_img) =
             seam_warper.warp(&small, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
         let mask_src = PixelImage::new(sw, sh, 1, vec![255u8; sw * sh]);
@@ -610,6 +623,13 @@ pub fn render_preview(
                 resize_rgb(src, sw, sh)
             };
             let k = k_for(&ai.camera, compose_mul);
+            warper.set_lens(
+                alignment.lens,
+                k[0][2] as f64,
+                k[1][2] as f64,
+                scaled.width as f64,
+                scaled.height as f64,
+            );
             let (tl, w_img) =
                 warper.warp(&scaled, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
             let mask_src = PixelImage::new(
@@ -946,6 +966,7 @@ mod tests {
             }],
             dropped: vec![],
             warped_image_scale: 1.0,
+            lens: crate::lens::LensParams::default(),
         };
         // Ry(90°) in the engine convention.
         let r_g = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]];

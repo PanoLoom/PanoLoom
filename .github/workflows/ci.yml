@@ -57,6 +57,7 @@ jobs:
           node packages/app/e2e/m6-adjust.mjs
           node packages/app/e2e/m8-sample.mjs
           node packages/app/e2e/m8-project.mjs
+          node packages/app/e2e/m9-cp-editor.mjs
           node packages/app/e2e/m7-export.mjs
       - name: Report wasm size
         run: ls -la packages/app/src/engine/pkg/*.wasm packages/app/src/engine/pkg-mt/*.wasm && gzip -k -9 packages/app/src/engine/pkg/panoloom_bg.wasm packages/app/src/engine/pkg-mt/panoloom_bg.wasm && ls -la packages/app/src/engine/pkg/*.gz packages/app/src/engine/pkg-mt/*.gz

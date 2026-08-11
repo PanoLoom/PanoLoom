@@ -13,6 +13,7 @@
 pub mod blend;
 pub mod bundle;
 pub mod camera;
+pub mod cp;
 pub mod cvmath;
 pub mod estimation;
 pub mod export;
@@ -21,7 +22,9 @@ pub mod fast;
 pub mod homography;
 pub mod image;
 pub mod imgproc;
+pub mod lens;
 pub mod matcher;
+pub mod optimizer;
 pub mod orb;
 pub mod orb_pattern;
 pub(crate) mod par;
