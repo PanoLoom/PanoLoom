@@ -42,6 +42,9 @@ your machine via Rust compiled to WebAssembly, hosted as a static site.
 
 - **Installable & offline**: the app is a PWA — after the first visit it loads and
   stitches with no connection at all (nothing ever leaves your machine anyway).
+- **Session restore**: everything autosaves locally (photos, alignment, points, masks,
+  name) — close the tab mid-project and the next visit offers to pick up where you left
+  off, no re-align needed.
 
 Typical numbers (M2 MacBook, Chrome, 10-thread pool): an 8-shot ring stitches in ~1.4 s;
 a real 33-shot 12.6 MP DJI sphere aligns + previews in ~56 s and exports its 147 MP
@@ -120,9 +123,8 @@ PANOLOOM_TIMING=1 cargo run --release --example profile_align -- <dir> [priors.j
 
 ## Roadmap
 
-v1.x: AKAZE/SIFT for low-texture scenes → session auto-restore. Later: RAW input,
-HDR/exposure fusion, vignetting optimization, WebGPU compositing, 16-bit TIFF, more
-projections.
+v1.x: AKAZE/SIFT for low-texture scenes. Later: RAW input, HDR/exposure fusion,
+vignetting optimization, WebGPU compositing, 16-bit TIFF, more projections.
 
 ## License
 

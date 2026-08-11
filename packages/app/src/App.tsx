@@ -8,6 +8,14 @@ import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { buildProject, parseProject, type ParsedProject } from "./lib/project";
 import { deriveProjectName, sanitizeProjectName } from "./lib/projectName";
+import {
+  clearSession,
+  deleteFile as sessionDeleteFile,
+  loadSession,
+  saveFile as sessionSaveFile,
+  saveState as sessionSaveState,
+  type SessionState,
+} from "./lib/session";
 import { Viewer, type SphereCorrection } from "./components/Viewer";
 import { CpEditor } from "./components/CpEditor";
 import { MaskEditor, type MaskMap } from "./components/MaskEditor";
@@ -130,6 +138,10 @@ export function App() {
   const [adjust, setAdjust] = useState({ yaw: 0, pitch: 0, roll: 0 });
   const psv = useRef<PsvViewer | null>(null);
   const exportAborted = useRef(false);
+  // A saved session offered for restore (only when nothing is loaded yet).
+  const [resumable, setResumable] = useState<
+    (SessionState & { files: Map<number, File> }) | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -164,6 +176,111 @@ export function App() {
     const c = bootEngine();
     return () => c?.dispose();
   }, [bootEngine]);
+
+  // Offer to restore the previous session (once, while nothing is loaded).
+  useEffect(() => {
+    void loadSession().then((s) => {
+      if (s) setResumable(s);
+    });
+  }, []);
+
+  // Autosave after every milestone that ends in a rendered preview
+  // (align, optimize, orient, masks, project load) plus CP/name edits.
+  useEffect(() => {
+    if (phase.kind !== "preview" || shots.length === 0) return;
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const alignmentJson = await engine.current!.exportAlignment();
+          await sessionSaveState({
+            savedAt: Date.now(),
+            projectName,
+            nameEdited: nameEdited.current,
+            workScale: workScale.current,
+            shots: shots.map((s) => ({
+              id: s.id,
+              fileName: s.fileName,
+              fullWidth: s.fullWidth,
+              fullHeight: s.fullHeight,
+              focalLength35mm: s.focalLength35mm,
+              posePrior: s.posePrior,
+            })),
+            alignmentJson,
+            cps,
+            masks: [...maskMap.entries()]
+              .filter(([, m]) => m.some((v) => v !== 0))
+              .map(([id, m]) => {
+                const shot = shots.find((s) => s.id === id)!;
+                return { id, width: shot.width, height: shot.height, data: m };
+              }),
+          });
+        } catch {
+          // Autosave is best-effort.
+        }
+      })();
+    }, 800);
+    return () => clearTimeout(t);
+  }, [phase, shots, cps, maskMap, projectName]);
+
+  /** Rebuild the whole session from IndexedDB. */
+  const restoreSession = useCallback(
+    async (s: SessionState & { files: Map<number, File> }) => {
+      setResumable(null);
+      setError(null);
+      try {
+        workScale.current = s.workScale;
+        nameEdited.current = s.nameEdited;
+        setProjectName(s.projectName);
+        for (const shot of s.shots) {
+          const file = s.files.get(shot.id)!;
+          const img = await decodeFile(file, s.workScale);
+          await engine.current!.addImage(
+            shot.id,
+            img.rgba,
+            img.width,
+            img.height,
+            shot.posePrior,
+          );
+          const { rgba: _discarded, id: _decodeId, ...meta } = img;
+          files.current.set(shot.id, file);
+          setShots((prev) => [
+            ...prev,
+            { ...meta, id: shot.id, dropped: false, rescued: false },
+          ]);
+        }
+        const restored: MaskMap = new Map();
+        for (const m of s.masks) {
+          restored.set(m.id, m.data);
+          await engine.current!.setMask(
+            m.id,
+            m.data.slice().buffer as ArrayBuffer,
+            m.width,
+            m.height,
+          );
+        }
+        if (restored.size > 0) setMaskMap(restored);
+        if (s.cps) setCps(s.cps as EngineControlPoint[]);
+        if (s.alignmentJson) {
+          const result = await engine.current!.importAlignment(s.alignmentJson);
+          setShots((prev) =>
+            prev.map((shot) => ({
+              ...shot,
+              dropped: result.dropped.includes(shot.id),
+              rescued: result.rescued.includes(shot.id),
+            })),
+          );
+          setPhase({ kind: "previewing" });
+          const p = await engine.current!.renderPreview(4096);
+          setPhase({ kind: "preview", ...p });
+        } else {
+          setPhase({ kind: "loaded" });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [],
+  );
 
   // Keep the derived project name in sync with the shots until the user
   // renames it (then it's theirs).
@@ -222,6 +339,7 @@ export function App() {
           );
           const { rgba: _discarded, id: _decodeId, ...meta } = img;
           files.current.set(entry.id, file);
+          void sessionSaveFile(entry.id, file);
           setShots((s) => [
             ...s,
             { ...meta, id: entry.id, dropped: false, rescued: false },
@@ -302,6 +420,7 @@ export function App() {
           );
           const { rgba: _discarded, ...meta } = img;
           files.current.set(img.id, file);
+          void sessionSaveFile(img.id, file);
           setShots((s) => [...s, { ...meta, dropped: false, rescued: false }]);
           setPhase((p) => (p.kind === "empty" ? { kind: "loaded" } : p));
         } catch (e) {
@@ -589,9 +708,11 @@ export function App() {
         return next;
       });
       dirtyMasks.current.delete(id);
+      void sessionDeleteFile(id);
       setShots((s) => {
         const next = s.filter((shot) => shot.id !== id);
         setPhase(next.length > 0 ? { kind: "loaded" } : { kind: "empty" });
+        if (next.length === 0) void clearSession();
         return next.map((shot) => ({
           ...shot,
           dropped: false,
@@ -965,6 +1086,31 @@ export function App() {
             optimize={optimizeCps}
             onClose={() => setCpEditorOpen(false)}
           />
+        )}
+
+        {resumable && shots.length === 0 && (
+          <div className="resume-note">
+            <span>
+              Restore last session — <strong>{resumable.projectName}</strong> (
+              {resumable.shots.length} shots
+              {resumable.alignmentJson ? ", aligned" : ""})
+            </span>
+            <button
+              className="align-btn"
+              onClick={() => void restoreSession(resumable)}
+            >
+              Restore
+            </button>
+            <button
+              className="adjust-secondary"
+              onClick={() => {
+                setResumable(null);
+                void clearSession();
+              }}
+            >
+              Discard
+            </button>
+          </div>
         )}
 
         {phase.kind !== "preview" && (

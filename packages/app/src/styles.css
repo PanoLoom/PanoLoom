@@ -383,6 +383,23 @@ button {
   letter-spacing: 0.04em;
 }
 
+.resume-note {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--thread-dim);
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+
 .error-note {
   position: absolute;
   left: 50%;
