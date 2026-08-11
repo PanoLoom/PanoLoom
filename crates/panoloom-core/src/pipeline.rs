@@ -247,7 +247,7 @@ pub fn render_preview(
     let mut rgba = vec![0u8; canvas_w * canvas_h * 4];
     let off_x = (-std::f64::consts::PI * scale) as i32;
     for y in 0..roi.3 {
-        let cy = roi.1 - 0 + y as i32; // v starts at 0
+        let cy = roi.1 + y as i32; // canvas v origin coincides with warp v=0
         if cy < 0 || cy >= canvas_h as i32 {
             continue;
         }
