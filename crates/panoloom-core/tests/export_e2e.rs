@@ -57,10 +57,19 @@ fn banded_export_ring() {
 
     let mut exporter = Exporter::new(&sources, &alignment, &full_sizes, 16384).expect("exporter");
     let (cw, ch) = exporter.canvas_size();
-    eprintln!("export canvas {cw}x{ch}, {} bands", exporter.bands().len());
-    assert_eq!(ch * 2, cw, "canvas must be exactly 2:1");
+    let (crop_x, crop_y, crop_w, crop_h) = exporter.crop();
+    eprintln!(
+        "export canvas {cw}x{ch}, crop {crop_w}x{crop_h}+{crop_x}+{crop_y}, {} bands",
+        exporter.bands().len()
+    );
+    assert_eq!(ch * 2, cw, "full canvas must be exactly 2:1");
     // Native full res of this set is ~7500px wide (1600px sources).
     assert!(cw > 6000, "expected near-native canvas, got {cw}");
+    // The ring wraps 360° but covers only a band of latitudes: full width,
+    // cropped height.
+    assert_eq!(crop_w, cw, "wrapped pano keeps full width");
+    assert!(crop_h < ch, "ring must crop vertically");
+    assert!(crop_y > 0 && crop_y + crop_h <= ch);
 
     let band_plan: Vec<Vec<u32>> = exporter.bands().iter().map(|b| b.needed.clone()).collect();
     for (b, needed) in band_plan.iter().enumerate() {
@@ -83,7 +92,7 @@ fn banded_export_ring() {
     }
     let (jpeg, w, h) = exporter.finish(90).expect("finish");
     eprintln!("jpeg: {} bytes for {w}x{h}", jpeg.len());
-    assert_eq!((w, h), (cw, ch));
+    assert_eq!((w, h), (crop_w, crop_h), "JPEG spans exactly the crop");
     assert!(jpeg.len() > 500_000, "suspiciously small JPEG");
     assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "SOI");
 

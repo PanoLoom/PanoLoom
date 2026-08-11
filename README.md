@@ -18,9 +18,14 @@ your machine via Rust compiled to WebAssembly, hosted as a static site.
 - **Production compositing**: photometric gain compensation, graph-cut seams, multiband
   blending — with the panorama treated as a true cylinder, so seams cross the ±180°
   wrap invisibly.
+- **Orientation editing**: recenter and level the finished panorama (numeric
+  yaw/pitch/roll or "center on current view") with an instant live preview; Apply bakes
+  the rotation into the cameras so the export matches exactly.
 - **Full-resolution export**: composed in memory-bounded horizontal bands (a 17,000 px
   DJI panorama fits comfortably in wasm's address space), JPEG-encoded in wasm, stamped
-  with GPano XMP (Photo Sphere) metadata.
+  with GPano XMP (Photo Sphere) metadata. Partial panoramas export cropped to their
+  actual coverage — the GPano croppedArea fields place the crop on the full sphere, so
+  a single-row panorama isn't padded with baked-in black.
 - **Projects**: save the alignment as a `.panoproj` file; reopening skips registration
   entirely (the alignment restores bit-for-bit).
 - **Threads when available**: on cross-origin-isolated browsers the engine runs on a
@@ -87,7 +92,8 @@ pnpm -r test          # TS unit tests (metadata, shared)
 
 # browser end-to-end (needs `pnpm --filter @panoloom/app build` + `vite preview`):
 node packages/app/e2e/m5-stitch.mjs     # import -> align -> 360 viewer
-node packages/app/e2e/m7-export.mjs     # full-res export + GPano validation
+node packages/app/e2e/m6-adjust.mjs     # live orientation preview == baked result
+node packages/app/e2e/m7-export.mjs     # cropped full-res export + GPano validation
 node packages/app/e2e/m8-project.mjs    # project save/load round-trip
 node packages/app/e2e/m8-sample.mjs     # bundled sample set
 ```

@@ -71,8 +71,18 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         post({ type: "aligned", result });
         break;
       }
+      case "orient": {
+        engine!.orient(Float64Array.from(msg.r));
+        post({ type: "oriented" });
+        break;
+      }
       case "exportAlignment": {
         post({ type: "alignmentExported", alignment: engine!.export_alignment() });
+        break;
+      }
+      case "cancelExport": {
+        engine!.cancel_export();
+        post({ type: "exportCancelled" });
         break;
       }
       case "importAlignment": {
@@ -133,7 +143,16 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         const jpeg = r.take_jpeg();
         const buf = jpeg.buffer as ArrayBuffer;
         post(
-          { type: "exportDone", jpeg: buf, width: r.width, height: r.height },
+          {
+            type: "exportDone",
+            jpeg: buf,
+            width: r.width,
+            height: r.height,
+            left: r.left,
+            top: r.top,
+            fullWidth: r.full_width,
+            fullHeight: r.full_height,
+          },
           [buf],
         );
         r.free();

@@ -2,18 +2,36 @@ import { useEffect, useRef } from "react";
 import { Viewer as PsvViewer } from "@photo-sphere-viewer/core";
 import "@photo-sphere-viewer/core/index.css";
 
+export interface SphereCorrection {
+  pan: number;
+  tilt: number;
+  roll: number;
+}
+
 /** 360° preview: renders an equirect RGBA buffer via Photo Sphere Viewer. */
 export function Viewer({
   rgba,
   width,
   height,
+  correction,
+  onViewer,
 }: {
   rgba: ArrayBuffer;
   width: number;
   height: number;
+  /** Live orientation preview (radians) — applied without re-rendering. */
+  correction?: SphereCorrection;
+  onViewer?: (v: PsvViewer | null) => void;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const viewer = useRef<PsvViewer | null>(null);
+
+  useEffect(() => {
+    viewer.current?.setOption(
+      "sphereCorrection",
+      correction ?? { pan: 0, tilt: 0, roll: 0 },
+    );
+  }, [correction]);
 
   useEffect(() => {
     const canvas = document.createElement("canvas");
@@ -56,13 +74,16 @@ export function Viewer({
         // Test hook.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__psv = viewer.current;
+        onViewer?.(viewer.current);
       },
       { once: true },
     );
     return () => {
+      onViewer?.(null);
       viewer.current?.destroy();
       viewer.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rgba, width, height]);
 
   return <div className="viewer" ref={el} />;

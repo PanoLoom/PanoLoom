@@ -79,11 +79,24 @@ for (let i = 2; i < buf.length - 9; ) {
   }
   i += 2 + buf.readUInt16BE(i + 2);
 }
-const xmp = buf.includes(Buffer.from("GPano:FullPanoWidthPixels"));
-const equi = buf.includes(Buffer.from("equirectangular"));
-console.log(`jpeg ${w}x${h}, ${(buf.length / 1e6).toFixed(1)} MB, GPano=${xmp}, equirect=${equi}`);
-if (!xmp || !equi) throw new Error("GPano XMP missing");
-if (w !== 2 * h) throw new Error(`not 2:1 (${w}x${h})`);
+const head = buf.subarray(0, 131072).toString("latin1");
+const gp = (name) => {
+  const m = head.match(new RegExp(`GPano:${name}[=>"]+(\\d+)`));
+  return m ? Number(m[1]) : null;
+};
+const fullW = gp("FullPanoWidthPixels");
+const fullH = gp("FullPanoHeightPixels");
+const cropW = gp("CroppedAreaImageWidthPixels");
+const cropH = gp("CroppedAreaImageHeightPixels");
+const equi = head.includes("equirectangular");
+console.log(
+  `jpeg ${w}x${h}, ${(buf.length / 1e6).toFixed(1)} MB, full pano ${fullW}x${fullH}, ` +
+    `crop ${cropW}x${cropH}+${gp("CroppedAreaLeftPixels")}+${gp("CroppedAreaTopPixels")}, equirect=${equi}`,
+);
+if (!fullW || !equi) throw new Error("GPano XMP missing");
+if (fullW !== 2 * fullH) throw new Error(`full pano not 2:1 (${fullW}x${fullH})`);
+if (cropW !== w || cropH !== h)
+  throw new Error(`croppedArea ${cropW}x${cropH} != jpeg ${w}x${h}`);
 
 if (errors.length) {
   console.log("PAGE ERRORS:", errors);

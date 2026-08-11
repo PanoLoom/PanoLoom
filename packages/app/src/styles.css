@@ -382,6 +382,121 @@ button {
   background: var(--bg);
 }
 
+.shot {
+  position: relative;
+}
+
+.shot-remove {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.shot:hover .shot-remove {
+  opacity: 1;
+}
+
+.shot-remove:hover {
+  color: var(--bad);
+}
+
+/* ---------- adjust panel ---------- */
+
+.adjust-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 220px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 10;
+}
+
+.adjust-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.adjust-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 12px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.adjust-row input {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  width: 100%;
+}
+
+.adjust-row input:focus {
+  outline: none;
+  border-color: var(--thread-dim);
+}
+
+.adjust-row .unit {
+  color: var(--text-faint);
+}
+
+.adjust-secondary {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.adjust-secondary:hover:not(:disabled) {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.adjust-secondary:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.adjust-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.align-btn.ghost.active {
+  border-color: var(--thread-dim);
+  color: var(--thread);
+}
+
 .credit {
   position: absolute;
   left: 50%;

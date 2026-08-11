@@ -54,6 +54,7 @@ jobs:
           pnpm --filter @panoloom/app exec vite preview --port 4173 &
           for i in $(seq 1 30); do curl -sf http://localhost:4173 > /dev/null && break; sleep 1; done
           node packages/app/e2e/m5-stitch.mjs
+          node packages/app/e2e/m6-adjust.mjs
           node packages/app/e2e/m8-sample.mjs
           node packages/app/e2e/m8-project.mjs
           node packages/app/e2e/m7-export.mjs

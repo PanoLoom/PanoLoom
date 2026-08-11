@@ -76,6 +76,24 @@ macro_rules! stage_timed {
     }};
 }
 
+/// Rotate the whole panorama: left-multiply every camera rotation by the
+/// pano-frame rotation `r_g` (same structure as the orientation fix and
+/// wave correction). Content at direction d moves to r_g·d.
+pub fn orient_alignment(alignment: &mut Alignment, r_g: &[[f64; 3]; 3]) {
+    for ai in alignment.images.iter_mut() {
+        let old = ai.camera.r;
+        let mut r = [[0.0f32; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                r[a][b] = (r_g[a][0] * old[0][b] as f64
+                    + r_g[a][1] * old[1][b] as f64
+                    + r_g[a][2] * old[2][b] as f64) as f32;
+            }
+        }
+        ai.camera.r = r;
+    }
+}
+
 /// Full registration: features → matching → biggest component →
 /// estimation → bundle adjustment → wave correction.
 pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
@@ -908,4 +926,46 @@ pub(crate) fn dilate3(mask: &GrayImage) -> GrayImage {
         }
     }
     GrayImage::new(w, h, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orient_left_multiplies_and_round_trips() {
+        let cam = CameraParams {
+            r: [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            ..Default::default()
+        };
+        let mut alignment = Alignment {
+            images: vec![AlignedImage {
+                id: 7,
+                camera: cam,
+                rescued: false,
+            }],
+            dropped: vec![],
+            warped_image_scale: 1.0,
+        };
+        // Ry(90°) in the engine convention.
+        let r_g = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]];
+        orient_alignment(&mut alignment, &r_g);
+        let r = alignment.images[0].camera.r;
+        // R_g · cam.r, row by row.
+        let expect = [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        for a in 0..3 {
+            for b in 0..3 {
+                assert!((r[a][b] - expect[a][b]).abs() < 1e-6, "({a},{b})");
+            }
+        }
+        // Inverse rotation restores the original.
+        let r_inv = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        orient_alignment(&mut alignment, &r_inv);
+        let r = alignment.images[0].camera.r;
+        for a in 0..3 {
+            for b in 0..3 {
+                assert!((r[a][b] - cam.r[a][b]).abs() < 1e-6, "({a},{b})");
+            }
+        }
+    }
 }

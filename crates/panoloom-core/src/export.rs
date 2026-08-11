@@ -61,6 +61,8 @@ pub struct Exporter {
     covered: Vec<u8>, // 1 byte per canvas pixel (coverage)
     loaded: HashMap<u32, PixelImage>,
     bands_done: Vec<bool>,
+    /// Coverage crop (x, y, w, h) in canvas coordinates.
+    crop: (usize, usize, usize, usize),
 }
 
 impl Exporter {
@@ -146,12 +148,45 @@ impl Exporter {
         let ext_len = strip.2 as i32 - ext_start;
         let ext_trim = 64.min(ext_len / 2).max(0);
 
-        // Bands over canvas rows; needed = sources of entries intersecting
-        // the padded band (v coordinates == canvas rows).
+        // Coverage crop: the JPEG carries only covered rows (and columns,
+        // when the pano doesn't wrap); GPano croppedArea* fields tell
+        // viewers where the crop sits on the full sphere.
+        let full_wrap = stage.entries.iter().any(|&(_, dup)| dup);
+        let cy0 = entries
+            .iter()
+            .map(|e| e.roi.1)
+            .min()
+            .unwrap_or(0)
+            .clamp(0, canvas_h as i32) as usize;
+        let cy1 = entries
+            .iter()
+            .map(|e| e.roi.1 + e.roi.3)
+            .max()
+            .unwrap_or(canvas_h as i32)
+            .clamp(cy0 as i32, canvas_h as i32) as usize;
+        let off_x = (-std::f64::consts::PI * compose_scale) as i32;
+        let (cx0, cw) = if full_wrap {
+            (0usize, canvas_w)
+        } else {
+            // Content occupies strip columns [0, originals_end); crop only
+            // when that maps to a contiguous canvas range (no wrap-around).
+            let w = canvas_w as i32;
+            let s = (((strip.0 - off_x) % w) + w) % w;
+            let len = originals_end.clamp(0, w);
+            if s + len <= w {
+                (s as usize, len as usize)
+            } else {
+                (0, canvas_w)
+            }
+        };
+        let crop = (cx0, cy0, cw, cy1.max(cy0 + 1) - cy0);
+
+        // Bands over the cropped canvas rows; needed = sources of entries
+        // intersecting the padded band (v coordinates == canvas rows).
         let mut bands = Vec::new();
-        let mut y = 0usize;
-        while y < canvas_h {
-            let y1 = (y + BAND_H).min(canvas_h);
+        let mut y = cy0;
+        while y < cy1 {
+            let y1 = (y + BAND_H).min(cy1);
             let (py0, py1) = (y.saturating_sub(BAND_PAD) as i32, (y1 + BAND_PAD) as i32);
             let mut needed: Vec<u32> = entries
                 .iter()
@@ -168,6 +203,7 @@ impl Exporter {
         Ok(Self {
             canvas_w,
             canvas_h,
+            crop,
             compose_scale,
             ids,
             cameras,
@@ -190,6 +226,12 @@ impl Exporter {
 
     pub fn canvas_size(&self) -> (usize, usize) {
         (self.canvas_w, self.canvas_h)
+    }
+
+    /// Coverage crop in canvas coordinates: (x, y, width, height). The
+    /// encoded JPEG spans exactly this region.
+    pub fn crop(&self) -> (usize, usize, usize, usize) {
+        self.crop
     }
 
     pub fn bands(&self) -> &[ExportBand] {
@@ -379,17 +421,25 @@ impl Exporter {
             }
         }
 
+        // Pack the crop to the buffer front in place (dst row offset is
+        // always <= src row offset, so copy_within is a safe memmove).
+        let (cx, cy, cw, ch) = self.crop;
+        for r in 0..ch {
+            let src = ((cy + r) * w + cx) * 3;
+            self.canvas.copy_within(src..src + cw * 3, r * cw * 3);
+        }
+
         let mut out = Vec::new();
         let encoder = jpeg_encoder::Encoder::new(&mut out, quality);
         encoder
             .encode(
-                &self.canvas,
-                w as u16,
-                h as u16,
+                &self.canvas[..cw * ch * 3],
+                cw as u16,
+                ch as u16,
                 jpeg_encoder::ColorType::Rgb,
             )
             .map_err(|e| format!("jpeg encode: {e}"))?;
-        Ok((out, w, h))
+        Ok((out, cw, ch))
     }
 }
 

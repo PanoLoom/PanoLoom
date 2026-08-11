@@ -86,6 +86,18 @@ export class EngineClient {
     return r.result;
   }
 
+  /** Rotates the whole panorama (row-major 3x3, pano frame). */
+  async orient(r: number[]): Promise<void> {
+    const resp = await this.send({ type: "orient", r });
+    if (resp.type !== "oriented") throw new Error("unexpected response");
+  }
+
+  /** Frees an in-progress export session. */
+  async cancelExport(): Promise<void> {
+    const r = await this.send({ type: "cancelExport" });
+    if (r.type !== "exportCancelled") throw new Error("unexpected response");
+  }
+
   /** Exact-round-trip alignment JSON for project save. */
   async exportAlignment(): Promise<string> {
     const r = await this.send({ type: "exportAlignment" });
@@ -136,12 +148,19 @@ export class EngineClient {
     await this.send({ type: "exportBand", band });
   }
 
-  async finishExport(
-    quality: number,
-  ): Promise<{ jpeg: ArrayBuffer; width: number; height: number }> {
+  async finishExport(quality: number): Promise<{
+    jpeg: ArrayBuffer;
+    width: number;
+    height: number;
+    left: number;
+    top: number;
+    fullWidth: number;
+    fullHeight: number;
+  }> {
     const r = await this.send({ type: "finishExport", quality });
     if (r.type !== "exportDone") throw new Error("unexpected response");
-    return { jpeg: r.jpeg, width: r.width, height: r.height };
+    const { type: _t, ...rest } = r;
+    return rest;
   }
 
   dispose() {

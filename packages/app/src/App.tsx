@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import "@fontsource-variable/archivo";
 import "@fontsource/martian-mono/400.css";
 import { injectGPano } from "@panoloom/metadata";
+import { eulerYXZ, orientationFor } from "@panoloom/shared";
+import type { Viewer as PsvViewer } from "@photo-sphere-viewer/core";
 import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { buildProject, parseProject, type ParsedProject } from "./lib/project";
-import { Viewer } from "./components/Viewer";
+import { Viewer, type SphereCorrection } from "./components/Viewer";
 
 type Shot = Omit<DecodedImage, "rgba"> & {
   dropped: boolean;
@@ -108,6 +110,11 @@ export function App() {
   const [pendingProject, setPendingProject] = useState<ParsedProject | null>(
     null,
   );
+  // Orientation adjustment (degrees) — previewed live, baked on Apply.
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjust, setAdjust] = useState({ yaw: 0, pitch: 0, roll: 0 });
+  const psv = useRef<PsvViewer | null>(null);
+  const exportAborted = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -367,8 +374,13 @@ export function App() {
       );
       setExporting({ kind: "running", band: 0, bands: plan.bands.length });
 
+      exportAborted.current = false;
       const loaded = new Set<number>();
       for (let b = 0; b < plan.bands.length; b++) {
+        if (exportAborted.current) {
+          await engine.current!.cancelExport();
+          return;
+        }
         setExporting({ kind: "running", band: b, bands: plan.bands.length });
         const needed = plan.bands[b]!.needed;
         for (const id of needed) {
@@ -395,16 +407,22 @@ export function App() {
           }
         }
       }
+      if (exportAborted.current) {
+        await engine.current!.cancelExport();
+        return;
+      }
 
       setExporting({ kind: "encoding" });
       const result = await engine.current!.finishExport(92);
+      // The JPEG spans the coverage crop; GPano croppedArea places it on
+      // the full sphere so viewers render partial panoramas correctly.
       const withXmp = injectGPano(new Uint8Array(result.jpeg), {
-        fullPanoWidthPixels: result.width,
-        fullPanoHeightPixels: result.height,
+        fullPanoWidthPixels: result.fullWidth,
+        fullPanoHeightPixels: result.fullHeight,
         croppedAreaImageWidthPixels: result.width,
         croppedAreaImageHeightPixels: result.height,
-        croppedAreaLeftPixels: 0,
-        croppedAreaTopPixels: 0,
+        croppedAreaLeftPixels: result.left,
+        croppedAreaTopPixels: result.top,
       });
       await saveJpeg(withXmp, "panoloom-360.jpg");
     } catch (e) {
@@ -414,12 +432,70 @@ export function App() {
     }
   }, [phase.kind, shots, exportWidth]);
 
+  /** Bake the adjustment into the cameras and re-render the preview. */
+  const applyAdjust = useCallback(async () => {
+    if (phase.kind !== "preview") return;
+    setError(null);
+    try {
+      const r = orientationFor(adjust.yaw, adjust.pitch, adjust.roll);
+      await engine.current!.orient(r.flat());
+      setAdjust({ yaw: 0, pitch: 0, roll: 0 });
+      setPhase({ kind: "previewing" });
+      const p = await engine.current!.renderPreview(4096);
+      setPhase({ kind: "preview", ...p });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [phase.kind, adjust]);
+
+  /** Read the current view direction into the yaw/pitch fields. */
+  const centerOnView = useCallback(() => {
+    const pos = psv.current?.getPosition();
+    if (!pos) return;
+    setAdjust((a) => ({
+      ...a,
+      yaw: Math.round((pos.yaw * 180) / Math.PI * 10) / 10,
+      pitch: Math.round((pos.pitch * 180) / Math.PI * 10) / 10,
+    }));
+  }, []);
+
+  const removeShot = useCallback(async (id: number) => {
+    try {
+      await engine.current!.removeImage(id);
+      files.current.delete(id);
+      setShots((s) => {
+        const next = s.filter((shot) => shot.id !== id);
+        setPhase(next.length > 0 ? { kind: "loaded" } : { kind: "empty" });
+        return next.map((shot) => ({
+          ...shot,
+          dropped: false,
+          rescued: false,
+        }));
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
   const busy =
     phase.kind === "aligning" ||
     phase.kind === "previewing" ||
     exporting.kind !== "idle";
   const canAlign = ready && shots.length >= 2 && !busy;
   const canExport = ready && phase.kind === "preview" && !busy;
+  const adjustDirty =
+    adjust.yaw !== 0 || adjust.pitch !== 0 || adjust.roll !== 0;
+  // Live orientation preview: PSV sets the sphere mesh rotation as
+  // rotation.set(-tilt, -pan, roll, "YXZ"), which resolves to the mesh
+  // matrix EQUALING our pano-frame rotation — so the correction is the
+  // YXZ Euler decomposition of orientationFor(...). Calibrated against
+  // the baked orient() per axis and combined (see M6 e2e).
+  const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
+  const correction: SphereCorrection = {
+    pan: -euler.y,
+    tilt: -euler.x,
+    roll: euler.z,
+  };
 
   return (
     <div className="frame">
@@ -440,8 +516,27 @@ export function App() {
           {exporting.kind === "encoding" && ` · encoding JPEG`}
         </span>
         <span className="bar-spacer" />
+        {exporting.kind !== "idle" && (
+          <button
+            className="align-btn ghost"
+            onClick={() => {
+              exportAborted.current = true;
+            }}
+            title="Stop after the current band"
+          >
+            Cancel
+          </button>
+        )}
         {phase.kind === "preview" && (
           <>
+            <button
+              className={`align-btn ghost${adjustOpen ? " active" : ""}`}
+              disabled={busy}
+              onClick={() => setAdjustOpen((o) => !o)}
+              title="Recenter and level the panorama"
+            >
+              Adjust
+            </button>
             <button
               className="align-btn ghost"
               disabled={busy}
@@ -499,6 +594,16 @@ export function App() {
               }
             >
               <img src={s.thumbnailUrl} alt={s.fileName} />
+              {!busy && (
+                <button
+                  className="shot-remove"
+                  aria-label={`remove ${s.fileName}`}
+                  title="remove this shot"
+                  onClick={() => void removeShot(s.id)}
+                >
+                  ×
+                </button>
+              )}
               <div className="shot-meta">
                 <div className="shot-name">{s.fileName}</div>
                 <div className="shot-info">
@@ -528,7 +633,61 @@ export function App() {
         }}
       >
         {phase.kind === "preview" ? (
-          <Viewer rgba={phase.rgba} width={phase.width} height={phase.height} />
+          <>
+            <Viewer
+              rgba={phase.rgba}
+              width={phase.width}
+              height={phase.height}
+              correction={correction}
+              onViewer={(v) => {
+                psv.current = v;
+              }}
+            />
+            {adjustOpen && (
+              <div className="adjust-panel">
+                <div className="adjust-title">adjust orientation</div>
+                {(["yaw", "pitch", "roll"] as const).map((axis) => (
+                  <label key={axis} className="adjust-row">
+                    <span>{axis}</span>
+                    <input
+                      type="number"
+                      step={0.5}
+                      min={-180}
+                      max={180}
+                      value={adjust[axis]}
+                      onChange={(e) =>
+                        setAdjust((a) => ({
+                          ...a,
+                          [axis]: Number(e.target.value) || 0,
+                        }))
+                      }
+                    />
+                    <span className="unit">°</span>
+                  </label>
+                ))}
+                <button className="adjust-secondary" onClick={centerOnView}>
+                  center on current view
+                </button>
+                <div className="adjust-actions">
+                  <button
+                    className="adjust-secondary"
+                    disabled={!adjustDirty}
+                    onClick={() => setAdjust({ yaw: 0, pitch: 0, roll: 0 })}
+                  >
+                    Reset
+                  </button>
+                  <button
+                    className="align-btn"
+                    disabled={!adjustDirty || busy}
+                    onClick={() => void applyAdjust()}
+                    title="Bake this orientation into the panorama"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <label className={`dropzone${dragOver ? " over" : ""}`}>
             <h2>

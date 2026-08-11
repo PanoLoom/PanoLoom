@@ -33,11 +33,16 @@ pub struct Engine {
     exporter: Option<Exporter>,
 }
 
-/// Finished export: JPEG bytes + dimensions.
+/// Finished export: JPEG bytes (the coverage crop) + where that crop sits
+/// on the full sphere (GPano croppedArea semantics).
 #[wasm_bindgen]
 pub struct ExportResult {
     width: u32,
     height: u32,
+    full_width: u32,
+    full_height: u32,
+    left: u32,
+    top: u32,
     jpeg: Vec<u8>,
 }
 
@@ -51,6 +56,26 @@ impl ExportResult {
     #[wasm_bindgen(getter)]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn full_width(&self) -> u32 {
+        self.full_width
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn full_height(&self) -> u32 {
+        self.full_height
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn left(&self) -> u32 {
+        self.left
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn top(&self) -> u32 {
+        self.top
     }
 
     /// Moves the bytes out (call once).
@@ -127,7 +152,8 @@ impl Engine {
         let exporter = Exporter::new(&self.sources, alignment, &full_sizes, target_width as usize)
             .map_err(|e| JsError::new(&e))?;
 
-        let (w, h) = exporter.canvas_size();
+        let (fw, fh) = exporter.canvas_size();
+        let (cx, cy, cw, ch) = exporter.crop();
         let bands: Vec<String> = exporter
             .bands()
             .iter()
@@ -142,7 +168,7 @@ impl Engine {
             })
             .collect();
         let plan = format!(
-            "{{\"width\":{w},\"height\":{h},\"bands\":[{}]}}",
+            "{{\"width\":{cw},\"height\":{ch},\"left\":{cx},\"top\":{cy},\"fullWidth\":{fw},\"fullHeight\":{fh},\"bands\":[{}]}}",
             bands.join(",")
         );
         self.exporter = Some(exporter);
@@ -197,10 +223,16 @@ impl Engine {
             .exporter
             .take()
             .ok_or_else(|| JsError::new("no export in progress"))?;
+        let (fw, fh) = exporter.canvas_size();
+        let (cx, cy, _, _) = exporter.crop();
         let (jpeg, w, h) = exporter.finish(quality).map_err(|e| JsError::new(&e))?;
         Ok(ExportResult {
             width: w as u32,
             height: h as u32,
+            full_width: fw as u32,
+            full_height: fh as u32,
+            left: cx as u32,
+            top: cy as u32,
             jpeg,
         })
     }
@@ -248,11 +280,13 @@ impl Engine {
     pub fn remove_image(&mut self, id: u32) {
         self.sources.retain(|s| s.id != id);
         self.alignment = None;
+        self.exporter = None;
     }
 
     pub fn clear(&mut self) {
         self.sources.clear();
         self.alignment = None;
+        self.exporter = None;
     }
 
     pub fn image_count(&self) -> u32 {
@@ -285,6 +319,22 @@ impl Engine {
         );
         self.alignment = Some(alignment);
         Ok(json)
+    }
+
+    /// Rotates the whole panorama by a pano-frame rotation (row-major 3x3).
+    /// Content at direction d moves to r·d. Invalidates any running export.
+    pub fn orient(&mut self, r: Vec<f64>) -> Result<(), JsError> {
+        if r.len() != 9 {
+            return Err(JsError::new("rotation must have 9 elements"));
+        }
+        let alignment = self
+            .alignment
+            .as_mut()
+            .ok_or_else(|| JsError::new("align() has not succeeded yet"))?;
+        let r_g = [[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]];
+        panoloom_core::pipeline::orient_alignment(alignment, &r_g);
+        self.exporter = None;
+        Ok(())
     }
 
     /// Serializes the current alignment (exact float round-trip) for
