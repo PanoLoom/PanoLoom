@@ -406,31 +406,129 @@ pub fn find_seams_graph_cut_color(
         })
         .collect();
 
+    // The serial pair order (OpenCV's nested i<j loop). Each pair reads and
+    // writes ONLY masks[i] and masks[j], so the result is determined by the
+    // per-image order of pairs alone: pairs sharing no image commute
+    // exactly. We exploit that to run the expensive max-flows in parallel
+    // rounds (Kahn layering: a pair is eligible when it is the EARLIEST
+    // remaining pair for both of its images), which reproduces the serial
+    // output bit-for-bit.
+    type Roi = (i32, i32, i32, i32);
+    let mut pairs: Vec<(usize, usize, Roi)> = Vec::new();
     for i in 0..imgs.len().saturating_sub(1) {
         for j in (i + 1)..imgs.len() {
             let sz_i = (imgs[i].width as i32, imgs[i].height as i32);
             let sz_j = (imgs[j].width as i32, imgs[j].height as i32);
             if let Some(roi) = overlap_roi(corners[i], corners[j], sz_i, sz_j) {
-                find_in_pair(&imgs, corners, masks, i, j, roi);
+                pairs.push((i, j, roi));
             }
         }
     }
+    let mut queues: Vec<std::collections::VecDeque<usize>> =
+        vec![std::collections::VecDeque::new(); imgs.len()];
+    for (p, &(i, j, _)) in pairs.iter().enumerate() {
+        queues[i].push_back(p);
+        queues[j].push_back(p);
+    }
+
+    // Masks move into mutexes for the parallel rounds; a round's pairs are
+    // image-disjoint by construction, so every lock is uncontended.
+    let mask_cells: Vec<std::sync::Mutex<GrayImage>> = masks
+        .iter_mut()
+        .map(|m| std::sync::Mutex::new(std::mem::replace(m, GrayImage::new(0, 0, Vec::new()))))
+        .collect();
+
+    let mut remaining = pairs.len();
+    while remaining > 0 {
+        let round: Vec<usize> = pairs
+            .iter()
+            .enumerate()
+            .filter(|&(p, &(i, j, _))| {
+                queues[i].front() == Some(&p) && queues[j].front() == Some(&p)
+            })
+            .map(|(p, _)| p)
+            .collect();
+        debug_assert!(!round.is_empty());
+        crate::par::map(&round, |&p| {
+            let (i, j, roi) = pairs[p];
+            let mut mask_i = mask_cells[i].lock().unwrap();
+            let mut mask_j = mask_cells[j].lock().unwrap();
+            // Bounding boxes of warped sphere images (pole shots span nearly
+            // the whole strip) intersect far more often than the MASKS do,
+            // and when no pixel carries both masks the cut's mask update is
+            // a no-op (every write is guarded by the other image's mask) —
+            // skip the max-flow entirely. Output is identical to OpenCV's,
+            // which runs every box pair.
+            if masks_intersect(corners[i], corners[j], &mask_i, &mask_j, roi) {
+                find_in_pair(
+                    &imgs[i],
+                    &imgs[j],
+                    corners[i],
+                    corners[j],
+                    &mut mask_i,
+                    &mut mask_j,
+                    roi,
+                );
+            }
+        });
+        for &p in &round {
+            let (i, j, _) = pairs[p];
+            queues[i].pop_front();
+            queues[j].pop_front();
+            remaining -= 1;
+        }
+    }
+
+    for (m, cell) in masks.iter_mut().zip(mask_cells) {
+        *m = cell.into_inner().unwrap();
+    }
 }
 
+/// True when any pixel inside the pair's overlap ROI carries BOTH masks.
+fn masks_intersect(
+    tl1: (i32, i32),
+    tl2: (i32, i32),
+    mask1: &GrayImage,
+    mask2: &GrayImage,
+    roi: (i32, i32, i32, i32),
+) -> bool {
+    let (roi_x, roi_y, roi_w, roi_h) = roi;
+    for y in 0..roi_h {
+        let y1 = roi_y - tl1.1 + y;
+        let y2 = roi_y - tl2.1 + y;
+        if y1 < 0 || y2 < 0 || y1 >= mask1.height as i32 || y2 >= mask2.height as i32 {
+            continue;
+        }
+        let r1 = y1 as usize * mask1.width;
+        let r2 = y2 as usize * mask2.width;
+        for x in 0..roi_w {
+            let x1 = roi_x - tl1.0 + x;
+            let x2 = roi_x - tl2.0 + x;
+            if x1 < 0 || x2 < 0 || x1 >= mask1.width as i32 || x2 >= mask2.width as i32 {
+                continue;
+            }
+            if mask1.data[r1 + x1 as usize] != 0 && mask2.data[r2 + x2 as usize] != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
 fn find_in_pair(
-    imgs: &[F32Image],
-    corners: &[(i32, i32)],
-    masks: &mut [GrayImage],
-    first: usize,
-    second: usize,
+    img1: &F32Image,
+    img2: &F32Image,
+    tl1: (i32, i32),
+    tl2: (i32, i32),
+    mask1: &mut GrayImage,
+    mask2: &mut GrayImage,
     roi: (i32, i32, i32, i32),
 ) {
     const GAP: i32 = 10;
     let (roi_x, roi_y, roi_w, roi_h) = roi;
     let sub_w = (roi_w + 2 * GAP) as usize;
     let sub_h = (roi_h + 2 * GAP) as usize;
-    let tl1 = corners[first];
-    let tl2 = corners[second];
 
     let mut subimg1 = vec![[0f32; 3]; sub_w * sub_h];
     let mut subimg2 = vec![[0f32; 3]; sub_w * sub_h];
@@ -441,19 +539,14 @@ fn find_in_pair(
         for x in -GAP..roi_w + GAP {
             let si = ((y + GAP) as usize) * sub_w + (x + GAP) as usize;
             let (y1, x1) = (roi_y - tl1.1 + y, roi_x - tl1.0 + x);
-            if y1 >= 0 && x1 >= 0 && y1 < imgs[first].height as i32 && x1 < imgs[first].width as i32
-            {
-                subimg1[si] = imgs[first].data[y1 as usize * imgs[first].width + x1 as usize];
-                submask1[si] = masks[first].data[y1 as usize * imgs[first].width + x1 as usize];
+            if y1 >= 0 && x1 >= 0 && y1 < img1.height as i32 && x1 < img1.width as i32 {
+                subimg1[si] = img1.data[y1 as usize * img1.width + x1 as usize];
+                submask1[si] = mask1.data[y1 as usize * img1.width + x1 as usize];
             }
             let (y2, x2) = (roi_y - tl2.1 + y, roi_x - tl2.0 + x);
-            if y2 >= 0
-                && x2 >= 0
-                && y2 < imgs[second].height as i32
-                && x2 < imgs[second].width as i32
-            {
-                subimg2[si] = imgs[second].data[y2 as usize * imgs[second].width + x2 as usize];
-                submask2[si] = masks[second].data[y2 as usize * imgs[second].width + x2 as usize];
+            if y2 >= 0 && x2 >= 0 && y2 < img2.height as i32 && x2 < img2.width as i32 {
+                subimg2[si] = img2.data[y2 as usize * img2.width + x2 as usize];
+                submask2[si] = mask2.data[y2 as usize * img2.width + x2 as usize];
             }
         }
     }
@@ -518,16 +611,14 @@ fn find_in_pair(
     for y in 0..roi_h {
         for x in 0..roi_w {
             let si = ((y + GAP) as usize) * sub_w + (x + GAP) as usize;
-            let m1 =
-                (roi_y - tl1.1 + y) as usize * imgs[first].width + (roi_x - tl1.0 + x) as usize;
-            let m2 =
-                (roi_y - tl2.1 + y) as usize * imgs[second].width + (roi_x - tl2.0 + x) as usize;
+            let m1 = (roi_y - tl1.1 + y) as usize * img1.width + (roi_x - tl1.0 + x) as usize;
+            let m2 = (roi_y - tl2.1 + y) as usize * img2.width + (roi_x - tl2.0 + x) as usize;
             if graph.in_source_segment(si as i32) {
-                if masks[first].data[m1] != 0 {
-                    masks[second].data[m2] = 0;
+                if mask1.data[m1] != 0 {
+                    mask2.data[m2] = 0;
                 }
-            } else if masks[second].data[m2] != 0 {
-                masks[first].data[m1] = 0;
+            } else if mask2.data[m2] != 0 {
+                mask1.data[m1] = 0;
             }
         }
     }

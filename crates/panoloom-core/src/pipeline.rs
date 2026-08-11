@@ -51,6 +51,25 @@ pub struct Alignment {
     pub warped_image_scale: f64,
 }
 
+/// Native-only stage timing (Instant is unavailable on wasm32-unknown-
+/// unknown): prints stage durations to stderr when PANOLOOM_TIMING is set.
+macro_rules! stage_timed {
+    ($label:expr, $body:expr) => {{
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
+        let out = $body;
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("PANOLOOM_TIMING").is_some() {
+            eprintln!(
+                "[timing] {}: {:.0}ms",
+                $label,
+                t0.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        out
+    }};
+}
+
 /// Full registration: features → matching → biggest component →
 /// estimation → bundle adjustment → wave correction.
 pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
@@ -59,26 +78,39 @@ pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
     }
     let n = sources.len();
 
+    let detected = stage_timed!(
+        "orb-detect",
+        crate::par::map(sources, |s| {
+            let gray = rgb_to_gray_cv(&s.rgb.data, s.rgb.width, s.rgb.height);
+            let (kps, d) = orb_detect_and_compute(&gray, &OrbParams::default());
+            let pts: Vec<[f32; 2]> = kps.iter().map(|k| [k.x, k.y]).collect();
+            (pts, d, (s.rgb.width as u32, s.rgb.height as u32))
+        })
+    );
     let mut pts: Vec<Vec<[f32; 2]>> = Vec::with_capacity(n);
     let mut descs = Vec::with_capacity(n);
     let mut sizes = Vec::with_capacity(n);
-    for s in sources {
-        let gray = rgb_to_gray_cv(&s.rgb.data, s.rgb.width, s.rgb.height);
-        let (kps, d) = orb_detect_and_compute(&gray, &OrbParams::default());
-        pts.push(kps.iter().map(|k| [k.x, k.y]).collect());
+    for (p, d, s) in detected {
+        pts.push(p);
         descs.push(d);
-        sizes.push((s.rgb.width as u32, s.rgb.height as u32));
+        sizes.push(s);
     }
 
-    let mut upper = Vec::new();
+    let mut pair_ids = Vec::with_capacity(n * (n - 1) / 2);
     for i in 0..n {
         for j in (i + 1)..n {
-            upper.push((
-                (i, j),
-                match_pair(&pts[i], &descs[i], sizes[i], &pts[j], &descs[j], sizes[j]),
-            ));
+            pair_ids.push((i, j));
         }
     }
+    let upper = stage_timed!(
+        "match-pairs",
+        crate::par::map(&pair_ids, |&(i, j)| {
+            (
+                (i, j),
+                match_pair(&pts[i], &descs[i], sizes[i], &pts[j], &descs[j], sizes[j]),
+            )
+        })
+    );
     let graph = MatchGraph::from_upper_triangle(n, upper);
 
     let kept = leave_biggest_component(&graph, 1.0);
@@ -123,8 +155,11 @@ pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
         )
     };
 
-    let mut cameras = homography_based_estimate(&features, &graph);
-    if !bundle_adjust_ray(&features, &graph, &mut cameras) {
+    let mut cameras = stage_timed!("estimate", homography_based_estimate(&features, &graph));
+    if !stage_timed!(
+        "bundle-adjust",
+        bundle_adjust_ray(&features, &graph, &mut cameras)
+    ) {
         return Err("bundle adjustment failed".into());
     }
     let mut rmats: Vec<[[f32; 3]; 3]> = cameras.iter().map(|c| c.r).collect();
@@ -406,11 +441,10 @@ pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> Seam
     let seam_scale = snap_scale(alignment.warped_image_scale * SEAM_FROM_WORK_SCALE);
     let seam_mul = seam_scale / alignment.warped_image_scale;
 
-    let mut seam_warper = SphericalWarper::new(seam_scale as f32);
-    let mut s_corners = Vec::new();
-    let mut s_imgs: Vec<PixelImage> = Vec::new();
-    let mut s_masks: Vec<GrayImage> = Vec::new();
-    for (src, ai) in sources.iter().zip(&alignment.images) {
+    let inputs: Vec<(&PixelImage, &AlignedImage)> =
+        sources.iter().copied().zip(&alignment.images).collect();
+    let warped = crate::par::map(&inputs, |&(src, ai)| {
+        let mut seam_warper = SphericalWarper::new(seam_scale as f32);
         let (sw, sh) = (
             ((src.width as f64) * seam_mul).round().max(2.0) as usize,
             ((src.height as f64) * seam_mul).round().max(2.0) as usize,
@@ -427,9 +461,19 @@ pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> Seam
             Interp::Nearest,
             Border::Constant0,
         );
+        (
+            tl,
+            w_img,
+            GrayImage::new(w_mask.width, w_mask.height, w_mask.data),
+        )
+    });
+    let mut s_corners = Vec::with_capacity(n);
+    let mut s_imgs: Vec<PixelImage> = Vec::with_capacity(n);
+    let mut s_masks: Vec<GrayImage> = Vec::with_capacity(n);
+    for (tl, w_img, w_mask) in warped {
         s_corners.push(tl);
-        s_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
         s_imgs.push(w_img);
+        s_masks.push(w_mask);
     }
     // Rescued shots fill holes only (see suppress_rescued_masks).
     suppress_rescued_masks(&mut s_masks, &s_corners, alignment, 2);
@@ -471,7 +515,10 @@ pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> Seam
         .collect();
     let mut e_seam_masks: Vec<GrayImage> =
         entries.iter().map(|&(i, _)| s_masks[i].clone()).collect();
-    find_seams_graph_cut_color(&e_imgs, &e_corners, &mut e_seam_masks);
+    stage_timed!(
+        "graph-cut-seams",
+        find_seams_graph_cut_color(&e_imgs, &e_corners, &mut e_seam_masks)
+    );
 
     SeamStage {
         entries,
@@ -511,7 +558,7 @@ pub fn render_preview(
     };
     let compose_scale = snap_scale(compose_scale);
 
-    let stage = seam_stage(sources, alignment);
+    let stage = stage_timed!("seam-stage", seam_stage(sources, alignment));
     let (entries, compensator, e_seam_masks) =
         (stage.entries, stage.compensator, stage.e_seam_masks);
 
@@ -519,40 +566,57 @@ pub fn render_preview(
     let k_for = camera_k_scaled;
     let compose_mul = compose_scale / alignment.warped_image_scale;
     let period_comp = (2.0 * std::f64::consts::PI * compose_scale).floor() as i32;
-    let mut warper = SphericalWarper::new(compose_scale as f32);
+    let comp_inputs: Vec<(usize, &PixelImage, &AlignedImage)> = sources
+        .iter()
+        .zip(&alignment.images)
+        .enumerate()
+        .map(|(i, (src, ai))| (i, *src, ai))
+        .collect();
+    let composed = stage_timed!(
+        "compose-warp",
+        crate::par::map(&comp_inputs, |&(i, src, ai)| {
+            let mut warper = SphericalWarper::new(compose_scale as f32);
+            let (sw, sh) = (
+                ((src.width as f64) * compose_mul).round().max(2.0) as usize,
+                ((src.height as f64) * compose_mul).round().max(2.0) as usize,
+            );
+            let scaled = if (compose_mul - 1.0).abs() < 1e-9 {
+                src.clone()
+            } else {
+                resize_rgb(src, sw, sh)
+            };
+            let k = k_for(&ai.camera, compose_mul);
+            let (tl, w_img) =
+                warper.warp(&scaled, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
+            let mask_src = PixelImage::new(
+                scaled.width,
+                scaled.height,
+                1,
+                vec![255u8; scaled.width * scaled.height],
+            );
+            let (_, w_mask) = warper.warp(
+                &mask_src,
+                &k,
+                &ai.camera.r,
+                Interp::Nearest,
+                Border::Constant0,
+            );
+            let mut rgb = RgbImage::new(w_img.width, w_img.height, w_img.data);
+            compensator.apply(i, &mut rgb);
+            (
+                tl,
+                rgb,
+                GrayImage::new(w_mask.width, w_mask.height, w_mask.data),
+            )
+        })
+    );
     let mut comp_corners: Vec<(i32, i32)> = Vec::with_capacity(n);
     let mut comp_rgb: Vec<RgbImage> = Vec::with_capacity(n);
     let mut comp_cov: Vec<GrayImage> = Vec::with_capacity(n);
-    for (i, (src, ai)) in sources.iter().zip(&alignment.images).enumerate() {
-        let (sw, sh) = (
-            ((src.width as f64) * compose_mul).round().max(2.0) as usize,
-            ((src.height as f64) * compose_mul).round().max(2.0) as usize,
-        );
-        let scaled = if (compose_mul - 1.0).abs() < 1e-9 {
-            (*src).clone()
-        } else {
-            resize_rgb(src, sw, sh)
-        };
-        let k = k_for(&ai.camera, compose_mul);
-        let (tl, w_img) = warper.warp(&scaled, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
-        let mask_src = PixelImage::new(
-            scaled.width,
-            scaled.height,
-            1,
-            vec![255u8; scaled.width * scaled.height],
-        );
-        let (_, w_mask) = warper.warp(
-            &mask_src,
-            &k,
-            &ai.camera.r,
-            Interp::Nearest,
-            Border::Constant0,
-        );
-        let mut rgb = RgbImage::new(w_img.width, w_img.height, w_img.data);
-        compensator.apply(i, &mut rgb);
+    for (tl, rgb, cov) in composed {
         comp_corners.push(tl);
         comp_rgb.push(rgb);
-        comp_cov.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
+        comp_cov.push(cov);
     }
 
     // Feed every layout entry with ITS OWN seam mask, duplicates offset by
@@ -574,23 +638,25 @@ pub fn render_preview(
     let bands = num_bands_for(roi.2, roi.3);
     let mut blender = MultiBandBlender::new(bands);
     blender.prepare(roi.0, roi.1, roi.2, roi.3);
-    for (e, &(i, _)) in entries.iter().enumerate() {
-        let cov = &comp_cov[i];
-        let dilated = dilate3(&e_seam_masks[e]);
-        let up = crate::imgproc::resize_bilinear(&dilated, cov.width, cov.height);
-        let mut final_mask = vec![0u8; cov.width * cov.height];
-        for p in 0..final_mask.len() {
-            final_mask[p] = up.data[p] & cov.data[p];
+    stage_timed!("blend-feed", {
+        for (e, &(i, _)) in entries.iter().enumerate() {
+            let cov = &comp_cov[i];
+            let dilated = dilate3(&e_seam_masks[e]);
+            let up = crate::imgproc::resize_bilinear(&dilated, cov.width, cov.height);
+            let mut final_mask = vec![0u8; cov.width * cov.height];
+            for p in 0..final_mask.len() {
+                final_mask[p] = up.data[p] & cov.data[p];
+            }
+            blender.feed(
+                &comp_rgb[i].data,
+                comp_rgb[i].width,
+                comp_rgb[i].height,
+                &GrayImage::new(cov.width, cov.height, final_mask),
+                e_comp_corners[e],
+            );
         }
-        blender.feed(
-            &comp_rgb[i].data,
-            comp_rgb[i].width,
-            comp_rgb[i].height,
-            &GrayImage::new(cov.width, cov.height, final_mask),
-            e_comp_corners[e],
-        );
-    }
-    let (blended, coverage) = blender.blend();
+    });
+    let (blended, coverage) = stage_timed!("blend", blender.blend());
     let scale = compose_scale;
 
     // Strip ranges for the two-pass paste: the unrolled extension starts

@@ -84,6 +84,7 @@ export function App() {
   const workScale = useRef<number | null>(null);
   const files = useRef<Map<number, File>>(new Map());
   const [ready, setReady] = useState(false);
+  const [threads, setThreads] = useState(0);
   const [shots, setShots] = useState<Shot[]>([]);
   const [phase, setPhase] = useState<Phase>({ kind: "empty" });
   const [exporting, setExporting] = useState<ExportState>({ kind: "idle" });
@@ -96,7 +97,13 @@ export function App() {
   useEffect(() => {
     const c = new EngineClient();
     engine.current = c;
-    c.init().then(() => setReady(true), (e: Error) => setError(e.message));
+    c.init().then(
+      () => {
+        setThreads(c.threads);
+        setReady(true);
+      },
+      (e: Error) => setError(e.message),
+    );
     return () => c.dispose();
   }, []);
 
@@ -235,7 +242,11 @@ export function App() {
           Pano<em>Loom</em>
         </span>
         <span className="bar-status">
-          {ready ? `engine ready` : `loading engine…`}
+          {ready
+            ? threads > 0
+              ? `engine ready · ${threads} threads`
+              : `engine ready`
+            : `loading engine…`}
           {shots.length > 0 && ` · ${shots.length} shots`}
           {phase.kind === "aligning" && ` · ${elapsed.toFixed(1)}s`}
           {exporting.kind === "running" &&

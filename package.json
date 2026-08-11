@@ -3,8 +3,9 @@
   "private": true,
   "scripts": {
     "build:wasm": "RUSTFLAGS='-C target-feature=+simd128' wasm-pack build crates/panoloom-wasm --target web --release --out-dir ../../packages/app/src/engine/pkg --out-name panoloom",
-    "dev": "pnpm build:wasm && pnpm --filter @panoloom/app dev",
-    "build": "pnpm build:wasm && pnpm -r build",
+    "build:wasm-mt": "RUSTUP_TOOLCHAIN=nightly RUSTFLAGS='-C target-feature=+simd128,+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--max-memory=4294967296 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base' wasm-pack build crates/panoloom-wasm --target web --release --out-dir ../../packages/app/src/engine/pkg-mt --out-name panoloom -- --features mt -Z build-std=panic_abort,std",
+    "dev": "pnpm build:wasm && pnpm build:wasm-mt && pnpm --filter @panoloom/app dev",
+    "build": "pnpm build:wasm && pnpm build:wasm-mt && pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"
   },

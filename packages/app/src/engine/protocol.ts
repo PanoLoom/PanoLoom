@@ -44,7 +44,7 @@ export interface AlignResult {
 }
 
 export type WorkerResponse =
-  | { type: "ready"; version: string }
+  | { type: "ready"; version: string; threads: number }
   | { type: "imageAdded"; id: number }
   | { type: "imageRemoved"; id: number }
   | { type: "aligned"; result: AlignResult }

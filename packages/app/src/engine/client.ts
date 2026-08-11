@@ -14,6 +14,8 @@ export class EngineClient {
   private queue: Promise<unknown> = Promise.resolve();
   private pending: Pending | null = null;
   version = "";
+  /** rayon pool size; 0 = single-threaded engine. */
+  threads = 0;
 
   constructor() {
     this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
@@ -53,6 +55,7 @@ export class EngineClient {
     const r = await this.send({ type: "init" });
     if (r.type !== "ready") throw new Error("unexpected response");
     this.version = r.version;
+    this.threads = r.threads;
     return r.version;
   }
 

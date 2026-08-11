@@ -30,6 +30,11 @@ jobs:
       deployments: write
     steps:
       - uses: actions/checkout@v4
+      # nightly + rust-src for the multithreaded build (build-std, +atomics)
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

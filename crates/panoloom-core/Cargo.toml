@@ -7,9 +7,17 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Parallel hot loops via rayon. On by default so native builds and the
+# parity test suite exercise the same code paths as the mt wasm build;
+# the single-thread wasm build opts out with default-features = false.
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 jpeg-encoder = "0.7.1"
 nalgebra = "0.35.0"
+rayon = { version = "1.11", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -24,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # nightly + rust-src for the multithreaded build (build-std, +atomics)
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -37,8 +42,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:wasm
+      - run: pnpm build:wasm-mt
       - run: pnpm typecheck
       - run: pnpm --filter @panoloom/metadata test
       - run: pnpm --filter @panoloom/app build
       - name: Report wasm size
-        run: ls -la packages/app/src/engine/pkg/*.wasm && gzip -k -9 packages/app/src/engine/pkg/panoloom_bg.wasm && ls -la packages/app/src/engine/pkg/*.gz
+        run: ls -la packages/app/src/engine/pkg/*.wasm packages/app/src/engine/pkg-mt/*.wasm && gzip -k -9 packages/app/src/engine/pkg/panoloom_bg.wasm packages/app/src/engine/pkg-mt/panoloom_bg.wasm && ls -la packages/app/src/engine/pkg/*.gz packages/app/src/engine/pkg-mt/*.gz

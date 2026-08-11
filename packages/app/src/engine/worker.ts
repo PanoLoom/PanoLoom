@@ -2,9 +2,13 @@
 /**
  * Engine worker: owns the wasm Engine instance. Pixels arrive/leave as
  * transferable ArrayBuffers; one in-flight request at a time per op.
+ *
+ * Two engine builds exist: pkg (single-thread) and pkg-mt (rayon over a
+ * Web Worker pool via SharedArrayBuffer). The mt build needs cross-origin
+ * isolation; when available we load it and spin up one rayon worker per
+ * core. Both expose the identical Engine API.
  */
-import init, { Engine, engine_version } from "./pkg/panoloom.js";
-import wasmUrl from "./pkg/panoloom_bg.wasm?url";
+import type { Engine } from "./pkg/panoloom.js";
 import type { WorkerRequest, WorkerResponse } from "./protocol";
 
 let engine: Engine | null = null;
@@ -13,14 +17,35 @@ function post(msg: WorkerResponse, transfer: Transferable[] = []) {
   (self as unknown as Worker).postMessage(msg, transfer);
 }
 
+async function boot(): Promise<{ version: string; threads: number }> {
+  if (typeof SharedArrayBuffer !== "undefined" && self.crossOriginIsolated) {
+    try {
+      const mod = await import("./pkg-mt/panoloom.js");
+      const wasmUrl = (await import("./pkg-mt/panoloom_bg.wasm?url")).default;
+      await mod.default({ module_or_path: wasmUrl });
+      const threads = Math.min(navigator.hardwareConcurrency || 4, 16);
+      await mod.initThreadPool(threads);
+      engine = new mod.Engine() as unknown as Engine;
+      return { version: mod.engine_version(), threads };
+    } catch (err) {
+      console.warn("mt engine failed to start, using single-thread:", err);
+      engine = null;
+    }
+  }
+  const mod = await import("./pkg/panoloom.js");
+  const wasmUrl = (await import("./pkg/panoloom_bg.wasm?url")).default;
+  await mod.default({ module_or_path: wasmUrl });
+  engine = new mod.Engine();
+  return { version: mod.engine_version(), threads: 0 };
+}
+
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const msg = e.data;
   try {
     switch (msg.type) {
       case "init": {
-        await init({ module_or_path: wasmUrl });
-        engine = new Engine();
-        post({ type: "ready", version: engine_version() });
+        const { version, threads } = await boot();
+        post({ type: "ready", version, threads });
         break;
       }
       case "addImage": {
@@ -40,12 +65,16 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         break;
       }
       case "align": {
+        const t0 = performance.now();
         const result = JSON.parse(engine!.align());
+        console.log(`[engine] align: ${(performance.now() - t0).toFixed(0)}ms`);
         post({ type: "aligned", result });
         break;
       }
       case "preview": {
+        const t0 = performance.now();
         const p = engine!.render_preview(msg.maxWidth);
+        console.log(`[engine] preview: ${(performance.now() - t0).toFixed(0)}ms`);
         const rgba = p.take_rgba();
         const buf = rgba.buffer as ArrayBuffer;
         post(

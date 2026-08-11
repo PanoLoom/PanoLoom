@@ -243,15 +243,21 @@ impl SphericalWarper {
         let dh = (br.1 - tl.1 + 1) as usize;
 
         let mut dst = PixelImage::new(dw, dh, src.channels, vec![0u8; dw * dh * src.channels]);
-        for dv in 0..dh {
+        let this = &*self;
+        crate::par::for_each_chunk_mut(&mut dst.data, dw * src.channels, |dv, row| {
             for du in 0..dw {
                 let (sx, sy) =
-                    self.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
-                let out =
-                    &mut dst.data[(dv * dw + du) * src.channels..(dv * dw + du + 1) * src.channels];
-                sample(src, sx, sy, interp, border, out);
+                    this.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
+                sample(
+                    src,
+                    sx,
+                    sy,
+                    interp,
+                    border,
+                    &mut row[du * src.channels..(du + 1) * src.channels],
+                );
             }
-        }
+        });
         ((tl.0, tl.1), dst)
     }
 
@@ -277,15 +283,22 @@ impl SphericalWarper {
         let rows = y1.saturating_sub(y0);
 
         let mut dst = PixelImage::new(dw, rows, src.channels, vec![0u8; dw * rows * src.channels]);
-        for (out_row, dv) in (y0..y1).enumerate() {
+        let this = &*self;
+        crate::par::for_each_chunk_mut(&mut dst.data, dw * src.channels, |out_row, row| {
+            let dv = y0 + out_row;
             for du in 0..dw {
                 let (sx, sy) =
-                    self.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
-                let out = &mut dst.data
-                    [(out_row * dw + du) * src.channels..(out_row * dw + du + 1) * src.channels];
-                sample(src, sx, sy, interp, border, out);
+                    this.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
+                sample(
+                    src,
+                    sx,
+                    sy,
+                    interp,
+                    border,
+                    &mut row[du * src.channels..(du + 1) * src.channels],
+                );
             }
-        }
+        });
         ((tl.0, tl.1), dst)
     }
 }

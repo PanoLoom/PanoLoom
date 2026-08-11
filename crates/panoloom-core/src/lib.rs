@@ -24,6 +24,7 @@ pub mod imgproc;
 pub mod matcher;
 pub mod orb;
 pub mod orb_pattern;
+pub(crate) mod par;
 pub mod pipeline;
 pub mod project;
 pub mod rng;

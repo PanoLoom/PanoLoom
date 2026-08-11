@@ -9,9 +9,20 @@ use panoloom_core::pipeline::{align, render_preview, Alignment, SourceImage};
 use panoloom_core::warp::PixelImage;
 use wasm_bindgen::prelude::*;
 
+// mt build: re-export `initThreadPool` (JS calls it once after init with the
+// desired worker count; rayon then fans out across Web Workers over SAB).
+#[cfg(feature = "mt")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 #[wasm_bindgen]
 pub fn engine_version() -> String {
     panoloom_core::VERSION.to_string()
+}
+
+/// True when this module was built with the rayon thread pool.
+#[wasm_bindgen]
+pub fn engine_threaded() -> bool {
+    cfg!(feature = "mt")
 }
 
 /// One stitching project. Feed registration-scale images, align, render.

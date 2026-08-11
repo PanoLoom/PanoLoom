@@ -8,6 +8,7 @@ dist/
 
 # Generated wasm package (built by `pnpm build:wasm`)
 packages/app/src/engine/pkg/
+packages/app/src/engine/pkg-mt/
 
 # Python
 .venv/
