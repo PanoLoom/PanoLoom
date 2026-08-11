@@ -194,6 +194,10 @@ button {
   border-style: dashed;
 }
 
+.shot.rescued {
+  border-color: var(--thread-dim);
+}
+
 @keyframes shot-in {
   from {
     opacity: 0;

@@ -5,7 +5,10 @@ import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { Viewer } from "./components/Viewer";
 
-type Shot = Omit<DecodedImage, "rgba"> & { dropped: boolean };
+type Shot = Omit<DecodedImage, "rgba"> & {
+  dropped: boolean;
+  rescued: boolean;
+};
 
 type Phase =
   | { kind: "empty" }
@@ -54,9 +57,10 @@ export function App() {
             img.rgba,
             img.width,
             img.height,
+            img.posePrior,
           );
           const { rgba: _discarded, ...meta } = img;
-          setShots((s) => [...s, { ...meta, dropped: false }]);
+          setShots((s) => [...s, { ...meta, dropped: false, rescued: false }]);
           setPhase((p) => (p.kind === "empty" ? { kind: "loaded" } : p));
         } catch (e) {
           setError(`${file.name}: ${e instanceof Error ? e.message : e}`);
@@ -76,10 +80,11 @@ export function App() {
         s.map((shot) => ({
           ...shot,
           dropped: result.dropped.includes(shot.id),
+          rescued: result.rescued.includes(shot.id),
         })),
       );
       setPhase({ kind: "previewing" });
-      const p = await engine.current!.renderPreview(2048);
+      const p = await engine.current!.renderPreview(4096);
       setPhase({ kind: "preview", ...p });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -119,9 +124,15 @@ export function App() {
           shots.map((s, i) => (
             <div
               key={s.id}
-              className={`shot${s.dropped ? " dropped" : ""}`}
+              className={`shot${s.dropped ? " dropped" : ""}${s.rescued ? " rescued" : ""}`}
               style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}
-              title={s.dropped ? "could not be matched" : s.fileName}
+              title={
+                s.dropped
+                  ? "could not be matched"
+                  : s.rescued
+                    ? "too few features — placed from gimbal pose metadata"
+                    : s.fileName
+              }
             >
               <img src={s.thumbnailUrl} alt={s.fileName} />
               <div className="shot-meta">
@@ -129,7 +140,9 @@ export function App() {
                 <div className="shot-info">
                   {s.fullWidth}×{s.fullHeight}
                   {s.focalLength35mm ? ` · ${s.focalLength35mm}mm` : ""}
+                  {s.posePrior ? " · gimbal" : ""}
                   {s.dropped ? " · unmatched" : ""}
+                  {s.rescued ? " · placed by pose" : ""}
                 </div>
               </div>
             </div>

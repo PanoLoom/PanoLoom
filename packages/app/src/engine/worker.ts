@@ -29,6 +29,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
           new Uint8Array(msg.rgba),
           msg.width,
           msg.height,
+          msg.posePrior ? Float64Array.from(msg.posePrior) : undefined,
         );
         post({ type: "imageAdded", id: msg.id });
         break;

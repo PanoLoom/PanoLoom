@@ -16,6 +16,25 @@ export interface DecodedImage {
   height: number;
   thumbnailUrl: string;
   focalLength35mm: number | null;
+  /** Shooting-rig pose (yaw, pitch, roll — engine convention) when the
+   *  file carries one (DJI gimbal XMP). Rescues feature-poor sky shots. */
+  posePrior: [number, number, number] | null;
+}
+
+/** DJI drones/gimbals embed exact per-shot pose in XMP. Note: DJI's pitch
+ *  sign is inverted relative to the engine convention (probed empirically:
+ *  0.8° fit with the flip, 50°+ without). */
+function readDjiPosePrior(buf: ArrayBuffer): [number, number, number] | null {
+  const head = new TextDecoder("latin1").decode(
+    new Uint8Array(buf, 0, Math.min(buf.byteLength, 262144)),
+  );
+  const grab = (axis: string) =>
+    head.match(new RegExp(`drone-dji:Gimbal${axis}Degree="([+-][\\d.]+)"`));
+  const yaw = grab("Yaw")?.[1];
+  const pitch = grab("Pitch")?.[1];
+  const roll = grab("Roll")?.[1];
+  if (!yaw || !pitch || !roll) return null;
+  return [parseFloat(yaw), -parseFloat(pitch), parseFloat(roll)];
 }
 
 const REGISTR_MEGAPIXELS = 0.6e6;
@@ -41,6 +60,7 @@ export async function decodeFile(
   } catch {
     // EXIF is best-effort.
   }
+  const posePrior = readDjiPosePrior(buf);
 
   const full = await createImageBitmap(new Blob([buf]));
   const scale = workScale ?? workScaleFor(full.width, full.height);
@@ -69,6 +89,7 @@ export async function decodeFile(
     height: h,
     thumbnailUrl,
     focalLength35mm,
+    posePrior,
   };
   full.close();
   return result;

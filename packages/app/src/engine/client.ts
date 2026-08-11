@@ -61,8 +61,11 @@ export class EngineClient {
     rgba: ArrayBuffer,
     width: number,
     height: number,
+    posePrior: [number, number, number] | null = null,
   ): Promise<void> {
-    await this.send({ type: "addImage", id, rgba, width, height }, [rgba]);
+    await this.send({ type: "addImage", id, rgba, width, height, posePrior }, [
+      rgba,
+    ]);
   }
 
   async removeImage(id: number): Promise<void> {

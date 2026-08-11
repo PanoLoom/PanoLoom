@@ -29,16 +29,24 @@ pub struct SourceImage {
     pub id: u32,
     /// Registration-scale RGB pixels.
     pub rgb: PixelImage,
+    /// Optional shooting-rig pose prior (yaw, pitch, roll in degrees, e.g.
+    /// DJI `drone-dji:Gimbal*Degree` XMP). Used to RESCUE images that have
+    /// too few features to match (blank sky): after the feature-based
+    /// solve, unmatched images with a prior are placed via the best-fit
+    /// rotation between the prior frame and the solved frame.
+    pub pose_prior: Option<[f64; 3]>,
 }
 
 pub struct AlignedImage {
     pub id: u32,
     pub camera: CameraParams,
+    /// True when placed from a pose prior rather than feature matches.
+    pub rescued: bool,
 }
 
 pub struct Alignment {
     pub images: Vec<AlignedImage>,
-    /// ids that could not be matched into the panorama.
+    /// ids that could not be matched into the panorama (and had no prior).
     pub dropped: Vec<u32>,
     pub warped_image_scale: f64,
 }
@@ -126,18 +134,243 @@ pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
     }
 
     let scale = warped_image_scale(&cameras);
+    let mut images: Vec<AlignedImage> = kept
+        .iter()
+        .zip(cameras)
+        .map(|(&i, camera)| AlignedImage {
+            id: sources[i].id,
+            camera,
+            rescued: false,
+        })
+        .collect();
+
+    // Pose-prior rescue: place unmatched images that carry a shooting-rig
+    // pose (blank-sky shots in DJI sphere sets, etc.).
+    let offset = fit_prior_offset(sources, &images);
+    let mut still_dropped = Vec::new();
+    let rescuable: Vec<&SourceImage> = sources.iter().filter(|s| dropped.contains(&s.id)).collect();
+    if !rescuable.is_empty() {
+        for s in rescuable {
+            match (s.pose_prior, offset) {
+                (Some(prior), Some(off)) => {
+                    let r = mat3_mul_f64(&off, &prior_rotation(prior));
+                    let mut cam = CameraParams {
+                        focal: scale,
+                        ..Default::default()
+                    };
+                    cam.ppx = 0.5 * s.rgb.width as f64;
+                    cam.ppy = 0.5 * s.rgb.height as f64;
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            cam.r[a][b] = r[a][b] as f32;
+                        }
+                    }
+                    images.push(AlignedImage {
+                        id: s.id,
+                        camera: cam,
+                        rescued: true,
+                    });
+                }
+                _ => still_dropped.push(s.id),
+            }
+        }
+    }
+
+    // Orientation fix: waveCorrect has a global 180° ambiguity (panos can
+    // come out upside down). When pose priors exist, they define earth-up
+    // authoritatively: if the fitted offset maps earth-up to pano-down,
+    // roll the whole panorama 180° (Rz(pi), a pure rotation).
+    if let Some(off) = offset {
+        // Earth up in the prior frame is -y (y points down); mapped up's y
+        // component > 0 means it points DOWN in the pano frame.
+        let mapped_up_y = -off[1][1];
+        if mapped_up_y > 0.0 {
+            for ai in images.iter_mut() {
+                let mut r = [[0.0f32; 3]; 3];
+                for b in 0..3 {
+                    // Rz(pi) · R: negate the first two rows.
+                    r[0][b] = -ai.camera.r[0][b];
+                    r[1][b] = -ai.camera.r[1][b];
+                    r[2][b] = ai.camera.r[2][b];
+                }
+                ai.camera.r = r;
+            }
+        }
+    }
+
     Ok(Alignment {
-        images: kept
-            .iter()
-            .zip(cameras)
-            .map(|(&i, camera)| AlignedImage {
-                id: sources[i].id,
-                camera,
-            })
-            .collect(),
-        dropped,
+        images,
+        dropped: still_dropped,
         warped_image_scale: scale,
     })
+}
+
+type Mat3d = [[f64; 3]; 3];
+
+fn mat3_mul_f64(a: &Mat3d, b: &Mat3d) -> Mat3d {
+    let mut o = [[0.0; 3]; 3];
+    for r in 0..3 {
+        for c in 0..3 {
+            for k in 0..3 {
+                o[r][c] += a[r][k] * b[k][c];
+            }
+        }
+    }
+    o
+}
+
+/// Rig pose (yaw, pitch, roll degrees, earth-referenced like DJI gimbal
+/// values) to a pano<-camera rotation in our convention (y down, +pitch up):
+/// R = Ry(yaw) · Rx(-pitch) · Rz(roll).
+fn prior_rotation(p: [f64; 3]) -> Mat3d {
+    let (y, pi, r) = (p[0].to_radians(), (-p[1]).to_radians(), p[2].to_radians());
+    let ry = [
+        [y.cos(), 0.0, y.sin()],
+        [0.0, 1.0, 0.0],
+        [-y.sin(), 0.0, y.cos()],
+    ];
+    let rx = [
+        [1.0, 0.0, 0.0],
+        [0.0, pi.cos(), -pi.sin()],
+        [0.0, pi.sin(), pi.cos()],
+    ];
+    let rz = [
+        [r.cos(), -r.sin(), 0.0],
+        [r.sin(), r.cos(), 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    mat3_mul_f64(&mat3_mul_f64(&ry, &rx), &rz)
+}
+
+/// Wahba/Kabsch fit of the single rotation `off` minimizing
+/// Σ angle(off · R_prior_i, R_solved_i) over the feature-solved cameras
+/// that carry priors. Returns None when fewer than 2 anchors exist or the
+/// fit is poor (median residual > 8°, i.e. the priors are untrustworthy).
+fn fit_prior_offset(sources: &[SourceImage], solved: &[AlignedImage]) -> Option<Mat3d> {
+    use nalgebra::Matrix3;
+
+    let mut m = Matrix3::<f64>::zeros();
+    let mut anchors = Vec::new();
+    for ai in solved {
+        let src = sources.iter().find(|s| s.id == ai.id)?;
+        let Some(prior) = src.pose_prior else {
+            continue;
+        };
+        let rp = prior_rotation(prior);
+        let mut rs = [[0.0f64; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                rs[a][b] = ai.camera.r[a][b] as f64;
+            }
+        }
+        // M += R_solved · R_priorᵀ
+        for a in 0..3 {
+            for b in 0..3 {
+                let mut acc = 0.0;
+                for k in 0..3 {
+                    acc += rs[a][k] * rp[b][k];
+                }
+                m[(a, b)] += acc;
+            }
+        }
+        anchors.push((rp, rs));
+    }
+    if anchors.len() < 2 {
+        return None;
+    }
+
+    let svd = m.svd(true, true);
+    let (u, v_t) = (svd.u?, svd.v_t?);
+    let d = (u * v_t).determinant();
+    let correction = Matrix3::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, d.signum()));
+    let off_m = u * correction * v_t;
+    let mut off = [[0.0f64; 3]; 3];
+    for a in 0..3 {
+        for b in 0..3 {
+            off[a][b] = off_m[(a, b)];
+        }
+    }
+
+    // Residual check: reject unusable priors.
+    let mut residuals: Vec<f64> = anchors
+        .iter()
+        .map(|(rp, rs)| {
+            let pred = mat3_mul_f64(&off, rp);
+            let mut tr = 0.0;
+            for a in 0..3 {
+                for k in 0..3 {
+                    tr += pred[a][k] * rs[a][k];
+                }
+            }
+            (((tr - 1.0) / 2.0).clamp(-1.0, 1.0)).acos().to_degrees()
+        })
+        .collect();
+    residuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = residuals[residuals.len() / 2];
+    if median > 8.0 {
+        return None;
+    }
+    Some(off)
+}
+
+/// Diagnostic helper: median Wahba residual of a prior set against solved
+/// cameras, ignoring the acceptance threshold. For convention probing.
+pub fn debug_prior_fit_residual(sources: &[SourceImage], solved: &[AlignedImage]) -> Option<f64> {
+    use nalgebra::Matrix3;
+    let mut m = Matrix3::<f64>::zeros();
+    let mut anchors = Vec::new();
+    for ai in solved.iter().filter(|a| !a.rescued) {
+        let src = sources.iter().find(|s| s.id == ai.id)?;
+        let Some(prior) = src.pose_prior else {
+            continue;
+        };
+        let rp = prior_rotation(prior);
+        let mut rs = [[0.0f64; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                rs[a][b] = ai.camera.r[a][b] as f64;
+            }
+        }
+        for a in 0..3 {
+            for b in 0..3 {
+                let mut acc = 0.0;
+                for k in 0..3 {
+                    acc += rs[a][k] * rp[b][k];
+                }
+                m[(a, b)] += acc;
+            }
+        }
+        anchors.push((rp, rs));
+    }
+    if anchors.len() < 2 {
+        return None;
+    }
+    let svd = m.svd(true, true);
+    let (u, v_t) = (svd.u?, svd.v_t?);
+    let d = (u * v_t).determinant();
+    let corr = Matrix3::from_diagonal(&nalgebra::Vector3::new(1.0, 1.0, d.signum()));
+    let off_m = u * corr * v_t;
+    let mut off = [[0.0f64; 3]; 3];
+    for a in 0..3 {
+        for b in 0..3 {
+            off[a][b] = off_m[(a, b)];
+        }
+    }
+    let mut residuals: Vec<f64> = anchors
+        .iter()
+        .map(|(rp, rs)| {
+            let pred = mat3_mul_f64(&off, rp);
+            let mut tr = 0.0;
+            for a in 0..3 {
+                for k in 0..3 {
+                    tr += pred[a][k] * rs[a][k];
+                }
+            }
+            (((tr - 1.0) / 2.0).clamp(-1.0, 1.0)).acos().to_degrees()
+        })
+        .collect();
+    residuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Some(residuals[residuals.len() / 2])
 }
 
 pub struct Preview {
@@ -160,85 +393,116 @@ pub fn render_preview(
         return Err("sources/alignment mismatch".into());
     }
 
-    // Choose the warp scale so the full 360° canvas is <= max_width.
-    let swa = SEAM_FROM_WORK_SCALE;
-    let natural_scale = alignment.warped_image_scale * swa;
+    // Two-stage compose, mirroring the stitcher: gains + graph-cut seams at
+    // SEAM scale (cheap), composite at REGISTRATION scale (sharp), capped
+    // so the full 360° canvas stays <= max_width.
     let full_width_at = |s: f64| (2.0 * std::f64::consts::PI * s).ceil() as usize;
-    let scale = if full_width_at(natural_scale) > max_width {
+    let seam_scale = alignment.warped_image_scale * SEAM_FROM_WORK_SCALE;
+    let compose_scale = if full_width_at(alignment.warped_image_scale) > max_width {
         max_width as f64 / (2.0 * std::f64::consts::PI)
     } else {
-        natural_scale
+        alignment.warped_image_scale
     };
-    let img_scale = scale / alignment.warped_image_scale; // K multiplier
 
-    let mut warper = SphericalWarper::new(scale as f32);
-    let mut corners = Vec::new();
-    let mut sizes = Vec::new();
-    let mut warped_imgs: Vec<PixelImage> = Vec::new();
-    let mut warped_masks: Vec<GrayImage> = Vec::new();
-
-    for (src, ai) in sources.iter().zip(&alignment.images) {
-        // Downscale the registration-scale source to the warp working size.
-        let (sw, sh) = (
-            ((src.width as f64) * img_scale).round().max(2.0) as usize,
-            ((src.height as f64) * img_scale).round().max(2.0) as usize,
-        );
-        let gray_scaled_rgb = resize_rgb(src, sw, sh);
-
-        let c = &ai.camera;
-        let k = [
-            [
-                (c.focal * img_scale) as f32,
-                0.0,
-                (c.ppx * img_scale) as f32,
-            ],
-            [
-                0.0,
-                (c.focal * img_scale) as f32,
-                (c.ppy * img_scale) as f32,
-            ],
+    let k_for = |c: &CameraParams, m: f64| -> [[f32; 3]; 3] {
+        [
+            [(c.focal * m) as f32, 0.0, (c.ppx * m) as f32],
+            [0.0, (c.focal * m) as f32, (c.ppy * m) as f32],
             [0.0, 0.0, 1.0],
-        ];
-        let (tl, w_img) = warper.warp(&gray_scaled_rgb, &k, &c.r, Interp::Linear, Border::Reflect);
-        let mask_src = PixelImage::new(sw, sh, 1, vec![255u8; sw * sh]);
-        let (_, w_mask) = warper.warp(&mask_src, &k, &c.r, Interp::Nearest, Border::Constant0);
-        corners.push(tl);
-        sizes.push((w_img.width as i32, w_img.height as i32));
-        warped_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
-        warped_imgs.push(w_img);
-    }
+        ]
+    };
 
-    // Gain compensation + seams at this scale.
-    let rgb_for_feed: Vec<RgbImage> = warped_imgs
+    // --- stage 1: seam scale — warp, feed gains, find seams ---
+    let seam_mul = seam_scale / alignment.warped_image_scale;
+    let mut seam_warper = SphericalWarper::new(seam_scale as f32);
+    let mut s_corners = Vec::new();
+    let mut s_imgs: Vec<PixelImage> = Vec::new();
+    let mut s_masks: Vec<GrayImage> = Vec::new();
+    for (src, ai) in sources.iter().zip(&alignment.images) {
+        let (sw, sh) = (
+            ((src.width as f64) * seam_mul).round().max(2.0) as usize,
+            ((src.height as f64) * seam_mul).round().max(2.0) as usize,
+        );
+        let small = resize_rgb(src, sw, sh);
+        let k = k_for(&ai.camera, seam_mul);
+        let (tl, w_img) =
+            seam_warper.warp(&small, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
+        let mask_src = PixelImage::new(sw, sh, 1, vec![255u8; sw * sh]);
+        let (_, w_mask) = seam_warper.warp(
+            &mask_src,
+            &k,
+            &ai.camera.r,
+            Interp::Nearest,
+            Border::Constant0,
+        );
+        s_corners.push(tl);
+        s_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
+        s_imgs.push(w_img);
+    }
+    let s_rgb: Vec<RgbImage> = s_imgs
         .iter()
         .map(|w| RgbImage::new(w.width, w.height, w.data.clone()))
         .collect();
-    let compensator = BlocksGainCompensator::feed(&corners, &rgb_for_feed, &warped_masks);
-    let mut seam_masks: Vec<GrayImage> = warped_masks.clone();
-    find_seams_graph_cut_color(&warped_imgs, &corners, &mut seam_masks);
+    let compensator = BlocksGainCompensator::feed(&s_corners, &s_rgb, &s_masks);
+    let mut seam_masks: Vec<GrayImage> = s_masks.clone();
+    find_seams_graph_cut_color(&s_imgs, &s_corners, &mut seam_masks);
+
+    // --- stage 2: compose scale — warp sharp, apply gains, blend ---
+    let compose_mul = compose_scale / alignment.warped_image_scale;
+    let mut warper = SphericalWarper::new(compose_scale as f32);
+    let mut corners = Vec::new();
+    let mut sizes = Vec::new();
+    let mut fed: Vec<(RgbImage, GrayImage)> = Vec::new();
+    for (i, (src, ai)) in sources.iter().zip(&alignment.images).enumerate() {
+        let (sw, sh) = (
+            ((src.width as f64) * compose_mul).round().max(2.0) as usize,
+            ((src.height as f64) * compose_mul).round().max(2.0) as usize,
+        );
+        let scaled = if (compose_mul - 1.0).abs() < 1e-9 {
+            (*src).clone()
+        } else {
+            resize_rgb(src, sw, sh)
+        };
+        let k = k_for(&ai.camera, compose_mul);
+        let (tl, w_img) = warper.warp(&scaled, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
+        let mask_src = PixelImage::new(
+            scaled.width,
+            scaled.height,
+            1,
+            vec![255u8; scaled.width * scaled.height],
+        );
+        let (_, w_mask) = warper.warp(
+            &mask_src,
+            &k,
+            &ai.camera.r,
+            Interp::Nearest,
+            Border::Constant0,
+        );
+
+        let mut rgb = RgbImage::new(w_img.width, w_img.height, w_img.data);
+        compensator.apply(i, &mut rgb);
+
+        // Upscale dilated seam masks to compose size, AND with coverage.
+        let dilated = dilate3(&seam_masks[i]);
+        let up = crate::imgproc::resize_bilinear(&dilated, w_mask.width, w_mask.height);
+        let mut final_mask = vec![0u8; w_mask.width * w_mask.height];
+        for p in 0..final_mask.len() {
+            final_mask[p] = up.data[p] & w_mask.data[p];
+        }
+        corners.push(tl);
+        sizes.push((rgb.width as i32, rgb.height as i32));
+        fed.push((rgb, GrayImage::new(w_mask.width, w_mask.height, final_mask)));
+    }
 
     let roi = result_roi(&corners, &sizes);
     let bands = num_bands_for(roi.2, roi.3);
     let mut blender = MultiBandBlender::new(bands);
     blender.prepare(roi.0, roi.1, roi.2, roi.3);
-    for i in 0..n {
-        let mut rgb = rgb_for_feed[i].clone();
-        compensator.apply(i, &mut rgb);
-        // Dilate seam mask (3x3), AND with coverage (compose-loop semantics).
-        let dilated = dilate3(&seam_masks[i]);
-        let mut final_mask = vec![0u8; dilated.data.len()];
-        for p in 0..final_mask.len() {
-            final_mask[p] = dilated.data[p] & warped_masks[i].data[p];
-        }
-        blender.feed(
-            &rgb.data,
-            rgb.width,
-            rgb.height,
-            &GrayImage::new(dilated.width, dilated.height, final_mask),
-            corners[i],
-        );
+    for (i, (rgb, mask)) in fed.iter().enumerate() {
+        blender.feed(&rgb.data, rgb.width, rgb.height, mask, corners[i]);
     }
     let (blended, coverage) = blender.blend();
+    let scale = compose_scale;
 
     // Paste onto the full equirect canvas. In warp coordinates the full
     // sphere spans u in [-pi*scale, pi*scale), v in [0, pi*scale].

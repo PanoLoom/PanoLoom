@@ -39,6 +39,7 @@ fn pipeline_align_and_preview_ring() {
         .map(|i| SourceImage {
             id: 100 + i as u32,
             rgb: load_png(&dir.join(format!("work/img_{i:03}.png"))),
+            pose_prior: None,
         })
         .collect();
 

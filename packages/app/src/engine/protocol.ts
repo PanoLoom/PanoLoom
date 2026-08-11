@@ -8,6 +8,7 @@ export type WorkerRequest =
       rgba: ArrayBuffer;
       width: number;
       height: number;
+      posePrior: [number, number, number] | null;
     }
   | { type: "removeImage"; id: number }
   | { type: "align" }
@@ -15,6 +16,8 @@ export type WorkerRequest =
 
 export interface AlignResult {
   aligned: number[];
+  /** Placed via shooting-rig pose metadata (too few features to match). */
+  rescued: number[];
   dropped: number[];
   warpedImageScale: number;
 }
