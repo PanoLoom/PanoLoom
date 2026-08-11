@@ -12,6 +12,8 @@ export type WorkerRequest =
     }
   | { type: "removeImage"; id: number }
   | { type: "align" }
+  | { type: "exportAlignment" }
+  | { type: "importAlignment"; alignment: string }
   | { type: "preview"; maxWidth: number }
   | {
       type: "beginExport";
@@ -48,6 +50,7 @@ export type WorkerResponse =
   | { type: "imageAdded"; id: number }
   | { type: "imageRemoved"; id: number }
   | { type: "aligned"; result: AlignResult }
+  | { type: "alignmentExported"; alignment: string }
   | {
       type: "previewReady";
       rgba: ArrayBuffer;

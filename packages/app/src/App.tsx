@@ -4,6 +4,7 @@ import "@fontsource/martian-mono/400.css";
 import { injectGPano } from "@panoloom/metadata";
 import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
+import { buildProject, parseProject, type ParsedProject } from "./lib/project";
 import { Viewer } from "./components/Viewer";
 
 type Shot = Omit<DecodedImage, "rgba"> & {
@@ -40,10 +41,12 @@ async function decodeFull(
   };
 }
 
-async function saveJpeg(bytes: Uint8Array, suggestedName: string) {
-  const blob = new Blob([bytes.buffer as ArrayBuffer], {
-    type: "image/jpeg",
-  });
+async function saveBlob(
+  blob: Blob,
+  suggestedName: string,
+  description: string,
+  accept: Record<string, string[]>,
+) {
   const picker = (
     window as unknown as {
       showSaveFilePicker?: (o: object) => Promise<{
@@ -58,9 +61,7 @@ async function saveJpeg(bytes: Uint8Array, suggestedName: string) {
     try {
       const handle = await picker({
         suggestedName,
-        types: [
-          { description: "JPEG image", accept: { "image/jpeg": [".jpg"] } },
-        ],
+        types: [{ description, accept }],
       });
       const w = await handle.createWritable();
       await w.write(blob);
@@ -79,6 +80,14 @@ async function saveJpeg(bytes: Uint8Array, suggestedName: string) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+const saveJpeg = (bytes: Uint8Array, name: string) =>
+  saveBlob(
+    new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" }),
+    name,
+    "JPEG image",
+    { "image/jpeg": [".jpg"] },
+  );
+
 export function App() {
   const engine = useRef<EngineClient | null>(null);
   const workScale = useRef<number | null>(null);
@@ -89,23 +98,47 @@ export function App() {
   const [phase, setPhase] = useState<Phase>({ kind: "empty" });
   const [exporting, setExporting] = useState<ExportState>({ kind: "idle" });
   // Canvas width cap for export; 65535 (the JPEG dimension limit) = native.
-  const [exportWidth, setExportWidth] = useState(65535);
+  // Full-res compositing decodes several originals per band, so devices
+  // reporting little memory default to a smaller target (overridable).
+  const [exportWidth, setExportWidth] = useState(() => {
+    const gb = (navigator as { deviceMemory?: number }).deviceMemory;
+    return gb !== undefined && gb <= 4 ? 8192 : 65535;
+  });
+  // A parsed .panoproj waiting for the user to re-select its photos.
+  const [pendingProject, setPendingProject] = useState<ParsedProject | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
 
-  useEffect(() => {
+  /** Replace a crashed engine and re-import the retained files. Kept in a
+   *  ref so the client's onFatal hook always calls the latest version. */
+  const recoverEngine = useRef<() => void>(() => {});
+
+  const bootEngine = useCallback((onReady?: (c: EngineClient) => void) => {
+    if (typeof WebAssembly === "undefined") {
+      setError("this browser can't run PanoLoom — WebAssembly is required");
+      return null;
+    }
     const c = new EngineClient();
     engine.current = c;
+    c.onFatal = () => recoverEngine.current();
     c.init().then(
       () => {
         setThreads(c.threads);
         setReady(true);
+        onReady?.(c);
       },
-      (e: Error) => setError(e.message),
+      (e: Error) => setError(`engine failed to start: ${e.message}`),
     );
-    return () => c.dispose();
+    return c;
   }, []);
+
+  useEffect(() => {
+    const c = bootEngine();
+    return () => c?.dispose();
+  }, [bootEngine]);
 
   useEffect(() => {
     if (phase.kind !== "aligning") return;
@@ -116,11 +149,91 @@ export function App() {
     return () => clearInterval(t);
   }, [phase]);
 
+  /** Load a project's photos: ids come from the project, decode at the
+   *  project's work scale, then restore the alignment and preview. */
+  const importProjectFiles = useCallback(
+    async (picked: File[], project: ParsedProject) => {
+      const byName = new Map(picked.map((f) => [f.name, f]));
+      const missing = project.entries.filter((e) => !byName.has(e.fileName));
+      if (missing.length > 0) {
+        setError(
+          `missing ${missing.length} photo(s): ${missing
+            .slice(0, 4)
+            .map((m) => m.fileName)
+            .join(", ")}${missing.length > 4 ? ", …" : ""}`,
+        );
+        return;
+      }
+      try {
+        workScale.current = project.workScale;
+        for (const entry of project.entries) {
+          const file = byName.get(entry.fileName)!;
+          const img = await decodeFile(file, project.workScale);
+          if (img.fullWidth !== entry.width || img.fullHeight !== entry.height) {
+            throw new Error(
+              `${entry.fileName}: expected ${entry.width}×${entry.height}, got ${img.fullWidth}×${img.fullHeight}`,
+            );
+          }
+          await engine.current!.addImage(
+            entry.id,
+            img.rgba,
+            img.width,
+            img.height,
+            img.posePrior,
+          );
+          const { rgba: _discarded, id: _decodeId, ...meta } = img;
+          files.current.set(entry.id, file);
+          setShots((s) => [
+            ...s,
+            { ...meta, id: entry.id, dropped: false, rescued: false },
+          ]);
+        }
+        const result = await engine.current!.importAlignment(
+          project.alignmentJson,
+        );
+        setShots((s) =>
+          s.map((shot) => ({
+            ...shot,
+            dropped: result.dropped.includes(shot.id),
+            rescued: result.rescued.includes(shot.id),
+          })),
+        );
+        setPendingProject(null);
+        setPhase({ kind: "previewing" });
+        const p = await engine.current!.renderPreview(4096);
+        setPhase({ kind: "preview", ...p });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase({ kind: "empty" });
+        setShots([]);
+        setPendingProject(null);
+      }
+    },
+    [],
+  );
+
   const importFiles = useCallback(
     async (picked: FileList | File[]) => {
       setError(null);
-      const list = [...picked].filter((f) => /image\/(jpeg|png)/.test(f.type));
+      const all = [...picked];
+
+      // A .panoproj routes to the project-open flow.
+      const proj = all.find((f) => f.name.toLowerCase().endsWith(".panoproj"));
+      if (proj) {
+        try {
+          setPendingProject(parseProject(await proj.text()));
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+        return;
+      }
+
+      const list = all.filter((f) => /image\/(jpeg|png)/.test(f.type));
       if (list.length === 0) return;
+      if (pendingProject) {
+        await importProjectFiles(list, pendingProject);
+        return;
+      }
       for (const file of list) {
         try {
           const img = await decodeFile(file, workScale.current);
@@ -141,8 +254,76 @@ export function App() {
         }
       }
     },
-    [],
+    [pendingProject, importProjectFiles],
   );
+
+  /** Fetch the bundled sample set and import it like user files. */
+  const loadSample = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await fetch("samples/ring/manifest.json");
+      if (!res.ok) throw new Error("sample set unavailable");
+      const manifest = (await res.json()) as { files: string[] };
+      const files = await Promise.all(
+        manifest.files.map(async (name) => {
+          const r = await fetch(`samples/ring/${name}`);
+          if (!r.ok) throw new Error(`sample ${name} unavailable`);
+          return new File([await r.blob()], name, { type: "image/jpeg" });
+        }),
+      );
+      await importFiles(files);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [importFiles]);
+
+  // Keep the crash-recovery handler current (it needs the latest
+  // importFiles closure but is invoked from a long-lived client hook).
+  useEffect(() => {
+    recoverEngine.current = () => {
+      engine.current?.dispose();
+      setReady(false);
+      setThreads(0);
+      setShots([]);
+      setPhase({ kind: "empty" });
+      setExporting({ kind: "idle" });
+      setPendingProject(null);
+      setError(
+        "the engine ran out of memory or crashed — it has been restarted and your shots re-imported; run Align again",
+      );
+      const saved = [...files.current.values()];
+      files.current.clear();
+      bootEngine(() => {
+        if (saved.length > 0) void importFiles(saved);
+      });
+    };
+  }, [bootEngine, importFiles]);
+
+  const saveProject = useCallback(async () => {
+    try {
+      const alignment = await engine.current!.exportAlignment();
+      const doc = buildProject(
+        shots.map((s) => ({
+          id: s.id,
+          fileName: s.fileName,
+          fullWidth: s.fullWidth,
+          fullHeight: s.fullHeight,
+          focalLength35mm: s.focalLength35mm,
+        })),
+        alignment,
+        workScale.current ?? 1,
+        engine.current!.version,
+      );
+      await saveBlob(
+        new Blob([doc], { type: "application/json" }),
+        "panorama.panoproj",
+        "PanoLoom project",
+        { "application/json": [".panoproj"] },
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [shots]);
 
   const runAlign = useCallback(async () => {
     setError(null);
@@ -161,7 +342,12 @@ export function App() {
       const p = await engine.current!.renderPreview(4096);
       setPhase({ kind: "preview", ...p });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      let msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("do not overlap")) {
+        msg +=
+          " — check that the shots belong to one panorama and neighboring frames share ~30% of their view";
+      }
+      setError(msg);
       setPhase(shots.length > 0 ? { kind: "loaded" } : { kind: "empty" });
     }
   }, [shots.length]);
@@ -256,6 +442,14 @@ export function App() {
         <span className="bar-spacer" />
         {phase.kind === "preview" && (
           <>
+            <button
+              className="align-btn ghost"
+              disabled={busy}
+              onClick={() => void saveProject()}
+              title="Save alignment as a .panoproj file — reopen later to skip re-aligning"
+            >
+              Save Project
+            </button>
             <select
               className="export-size"
               disabled={!canExport}
@@ -338,20 +532,48 @@ export function App() {
         ) : (
           <label className={`dropzone${dragOver ? " over" : ""}`}>
             <h2>
-              {shots.length === 0
-                ? "Drop your shots here"
-                : `${shots.length} shots on the loom`}
+              {pendingProject
+                ? `Select this project's ${pendingProject.entries.length} photos`
+                : shots.length === 0
+                  ? "Drop your shots here"
+                  : `${shots.length} shots on the loom`}
             </h2>
             <p>
-              JPEG or PNG · overlapping frames ·{" "}
-              <span className="browse">browse files</span>
+              {pendingProject ? (
+                <>
+                  {pendingProject.entries[0]?.fileName}
+                  {pendingProject.entries.length > 1 &&
+                    ` … ${pendingProject.entries[pendingProject.entries.length - 1]?.fileName}`}{" "}
+                  · <span className="browse">browse files</span>
+                </>
+              ) : (
+                <>
+                  JPEG or PNG · overlapping frames · or a .panoproj project ·{" "}
+                  <span className="browse">browse files</span>
+                  {shots.length === 0 && (
+                    <>
+                      {" "}
+                      · or{" "}
+                      <span
+                        className="browse"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          void loadSample();
+                        }}
+                      >
+                        try a sample set
+                      </span>
+                    </>
+                  )}
+                </>
+              )}
             </p>
             <p className="hint">
               everything runs in your browser — nothing is uploaded
             </p>
             <input
               type="file"
-              accept="image/jpeg,image/png"
+              accept="image/jpeg,image/png,.panoproj"
               multiple
               onChange={(e) => {
                 if (e.target.files) void importFiles(e.target.files);
@@ -371,7 +593,32 @@ export function App() {
           </div>
         )}
 
-        {error && <div className="error-note">{error}</div>}
+        {phase.kind !== "preview" && (
+          <div className="credit">
+            open source ·{" "}
+            <a
+              href="https://github.com/PanoLoom/PanoLoom"
+              target="_blank"
+              rel="noreferrer"
+            >
+              GitHub
+            </a>{" "}
+            · Apache-2.0 · engine ported from OpenCV
+          </div>
+        )}
+
+        {error && (
+          <div className="error-note" role="alert">
+            {error}
+            <button
+              className="error-dismiss"
+              aria-label="dismiss"
+              onClick={() => setError(null)}
+            >
+              ×
+            </button>
+          </div>
+        )}
       </main>
     </div>
   );

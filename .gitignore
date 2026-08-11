@@ -25,3 +25,4 @@ tools/reference/dumps/
 *.local
 packages/app/e2e/*.png
 packages/app/e2e/*.jpg
+packages/app/e2e/*.panoproj

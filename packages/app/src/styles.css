@@ -346,6 +346,9 @@ button {
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   background: color-mix(in srgb, var(--bad) 16%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border));
   color: var(--text);
@@ -355,6 +358,21 @@ button {
   max-width: 70%;
 }
 
+.error-dismiss {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.error-dismiss:hover {
+  color: var(--text);
+}
+
 .viewer {
   position: absolute;
   inset: 0;
@@ -362,4 +380,93 @@ button {
 
 .viewer .psv-container {
   background: var(--bg);
+}
+
+.credit {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 6px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.credit a {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+
+.credit a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* ---------- narrow screens: filmstrip goes horizontal ---------- */
+
+@media (max-width: 720px) {
+  .frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--bar-h) 68px 1fr;
+    grid-template-areas:
+      "bar"
+      "rail"
+      "stage";
+  }
+
+  .bar {
+    gap: 8px;
+    padding: 0 12px;
+    overflow-x: auto;
+  }
+
+  .bar-status {
+    display: none;
+  }
+
+  .wordmark {
+    font-size: 15px;
+  }
+
+  .align-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .export-size {
+    flex: 0 0 auto;
+  }
+
+  .rail {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+  }
+
+  .rail-empty {
+    margin: 0 auto;
+  }
+
+  .shot {
+    grid-template-columns: 64px;
+    flex: 0 0 auto;
+  }
+
+  .shot-meta {
+    display: none;
+  }
+
+  .dropzone {
+    inset: 12px;
+  }
 }

@@ -10,9 +10,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
 const setDir =
   process.argv[2] ??
-  path.join(root, "tools/testdata/generated/ring_kloppenheim_06");
+  [
+    path.join(root, "tools/testdata/generated/ring_kloppenheim_06"),
+    path.join(root, "packages/app/public/samples/ring"),
+  ].find(existsSync);
 const exportWidth = process.argv[3] ?? "65535";
-if (!existsSync(setDir)) {
+if (!setDir || !existsSync(setDir)) {
   console.log("SKIP: test dataset not present");
   process.exit(0);
 }
@@ -45,7 +48,7 @@ console.log(`aligned + previewed in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 await page.selectOption("select.export-size", exportWidth);
 t0 = Date.now();
 const downloadP = page.waitForEvent("download", { timeout: 1800000 });
-await page.click("button.align-btn.ghost");
+await page.click('button:has-text("Export JPEG")');
 // Progress: poll the status line while the export runs.
 const poll = setInterval(async () => {
   try {

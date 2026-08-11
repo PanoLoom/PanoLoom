@@ -45,6 +45,17 @@ jobs:
       - run: pnpm build:wasm-mt
       - run: pnpm typecheck
       - run: pnpm --filter @panoloom/metadata test
+      - run: pnpm --filter @panoloom/shared test
       - run: pnpm --filter @panoloom/app build
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser e2e (bundled sample set)
+        run: |
+          pnpm --filter @panoloom/app exec vite preview --port 4173 &
+          for i in $(seq 1 30); do curl -sf http://localhost:4173 > /dev/null && break; sleep 1; done
+          node packages/app/e2e/m5-stitch.mjs
+          node packages/app/e2e/m8-sample.mjs
+          node packages/app/e2e/m8-project.mjs
+          node packages/app/e2e/m7-export.mjs
       - name: Report wasm size
         run: ls -la packages/app/src/engine/pkg/*.wasm packages/app/src/engine/pkg-mt/*.wasm && gzip -k -9 packages/app/src/engine/pkg/panoloom_bg.wasm packages/app/src/engine/pkg-mt/panoloom_bg.wasm && ls -la packages/app/src/engine/pkg/*.gz packages/app/src/engine/pkg-mt/*.gz

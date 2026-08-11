@@ -287,6 +287,54 @@ impl Engine {
         Ok(json)
     }
 
+    /// Serializes the current alignment (exact float round-trip) for
+    /// project save. Requires a prior successful `align()`.
+    pub fn export_alignment(&self) -> Result<String, JsError> {
+        let alignment = self
+            .alignment
+            .as_ref()
+            .ok_or_else(|| JsError::new("align() has not succeeded yet"))?;
+        serde_json::to_string(alignment).map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Restores an alignment saved by `export_alignment`. Every aligned id
+    /// must already be loaded via `add_image` (at the same work scale the
+    /// project was saved with). Returns the same JSON shape as `align()`.
+    pub fn import_alignment(&mut self, json: &str) -> Result<String, JsError> {
+        let alignment: Alignment =
+            serde_json::from_str(json).map_err(|e| JsError::new(&format!("bad project: {e}")))?;
+        for ai in &alignment.images {
+            if !self.sources.iter().any(|s| s.id == ai.id) {
+                return Err(JsError::new(&format!(
+                    "project image id {} has not been loaded",
+                    ai.id
+                )));
+            }
+        }
+        let aligned: Vec<String> = alignment
+            .images
+            .iter()
+            .filter(|a| !a.rescued)
+            .map(|a| a.id.to_string())
+            .collect();
+        let rescued: Vec<String> = alignment
+            .images
+            .iter()
+            .filter(|a| a.rescued)
+            .map(|a| a.id.to_string())
+            .collect();
+        let dropped: Vec<String> = alignment.dropped.iter().map(|d| d.to_string()).collect();
+        let json = format!(
+            "{{\"aligned\":[{}],\"rescued\":[{}],\"dropped\":[{}],\"warpedImageScale\":{}}}",
+            aligned.join(","),
+            rescued.join(","),
+            dropped.join(","),
+            alignment.warped_image_scale
+        );
+        self.alignment = Some(alignment);
+        Ok(json)
+    }
+
     /// Renders the blended preview as a full equirectangular RGBA canvas.
     /// Requires a prior successful `align()`.
     pub fn render_preview(&self, max_width: u32) -> Result<PreviewImage, JsError> {

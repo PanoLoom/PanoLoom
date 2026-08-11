@@ -71,6 +71,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         post({ type: "aligned", result });
         break;
       }
+      case "exportAlignment": {
+        post({ type: "alignmentExported", alignment: engine!.export_alignment() });
+        break;
+      }
+      case "importAlignment": {
+        const result = JSON.parse(engine!.import_alignment(msg.alignment));
+        post({ type: "aligned", result });
+        break;
+      }
       case "preview": {
         const t0 = performance.now();
         const p = engine!.render_preview(msg.maxWidth);

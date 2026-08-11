@@ -4,7 +4,8 @@
 //! resolution); `r` is the pano<-camera rotation, stored f32 exactly like
 //! OpenCV's CV_32F camera matrices after estimation (docs/pipeline.md §0).
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CameraParams {
     pub focal: f64,
     pub aspect: f64,

@@ -6,9 +6,13 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const setDir = path.join(root, "tools/testdata/generated/ring_kloppenheim_06");
-if (!existsSync(setDir)) {
-  console.log("SKIP: test dataset not present");
+// Prefer the generated test set; fall back to the bundled sample (CI).
+const setDir = [
+  path.join(root, "tools/testdata/generated/ring_kloppenheim_06"),
+  path.join(root, "packages/app/public/samples/ring"),
+].find(existsSync);
+if (!setDir) {
+  console.log("SKIP: no test dataset");
   process.exit(0);
 }
 const jpegs = readdirSync(setDir)

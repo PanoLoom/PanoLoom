@@ -16,6 +16,9 @@ export class EngineClient {
   version = "";
   /** rayon pool size; 0 = single-threaded engine. */
   threads = 0;
+  /** Fired on an UNCAUGHT worker error (wasm panic/OOM) — the engine is
+   *  gone; the app should replace this client and re-import its shots. */
+  onFatal: ((message: string) => void) | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
@@ -32,8 +35,10 @@ export class EngineClient {
       }
     };
     this.worker.onerror = (e) => {
-      this.pending?.reject(new Error(e.message));
+      const message = e.message || "engine crashed";
+      this.pending?.reject(new Error(message));
       this.pending = null;
+      this.onFatal?.(message);
     };
   }
 
@@ -77,6 +82,20 @@ export class EngineClient {
 
   async align(): Promise<AlignResult> {
     const r = await this.send({ type: "align" });
+    if (r.type !== "aligned") throw new Error("unexpected response");
+    return r.result;
+  }
+
+  /** Exact-round-trip alignment JSON for project save. */
+  async exportAlignment(): Promise<string> {
+    const r = await this.send({ type: "exportAlignment" });
+    if (r.type !== "alignmentExported") throw new Error("unexpected response");
+    return r.alignment;
+  }
+
+  /** Restores a saved alignment; images must be re-added first. */
+  async importAlignment(alignment: string): Promise<AlignResult> {
+    const r = await this.send({ type: "importAlignment", alignment });
     if (r.type !== "aligned") throw new Error("unexpected response");
     return r.result;
   }

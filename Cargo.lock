@@ -314,6 +314,7 @@ name = "panoloom-wasm"
 version = "0.1.0"
 dependencies = [
  "panoloom-core",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
 ]

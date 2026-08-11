@@ -37,6 +37,8 @@ pub struct SourceImage {
     pub pose_prior: Option<[f64; 3]>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlignedImage {
     pub id: u32,
     pub camera: CameraParams,
@@ -44,6 +46,10 @@ pub struct AlignedImage {
     pub rescued: bool,
 }
 
+/// Serializable (serde_json round-trips every float exactly, so a saved
+/// project restores the alignment bit-for-bit).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Alignment {
     pub images: Vec<AlignedImage>,
     /// ids that could not be matched into the panorama (and had no prior).
