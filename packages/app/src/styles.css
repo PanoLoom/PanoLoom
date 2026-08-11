@@ -156,6 +156,35 @@ button {
   cursor: default;
 }
 
+.align-btn.ghost {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.align-btn.ghost:hover:not(:disabled) {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.export-size {
+  appearance: none;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-right: -8px;
+}
+
+.export-size:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ---------- filmstrip rail ---------- */
 
 .rail {

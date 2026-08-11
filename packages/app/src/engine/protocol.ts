@@ -12,7 +12,28 @@ export type WorkerRequest =
     }
   | { type: "removeImage"; id: number }
   | { type: "align" }
-  | { type: "preview"; maxWidth: number };
+  | { type: "preview"; maxWidth: number }
+  | {
+      type: "beginExport";
+      targetWidth: number;
+      fullSizes: { id: number; width: number; height: number }[];
+    }
+  | {
+      type: "exportSetImage";
+      id: number;
+      rgba: ArrayBuffer;
+      width: number;
+      height: number;
+    }
+  | { type: "exportDropImage"; id: number }
+  | { type: "exportBand"; band: number }
+  | { type: "finishExport"; quality: number };
+
+export interface ExportPlan {
+  width: number;
+  height: number;
+  bands: { y0: number; y1: number; needed: number[] }[];
+}
 
 export interface AlignResult {
   aligned: number[];
@@ -30,6 +51,16 @@ export type WorkerResponse =
   | {
       type: "previewReady";
       rgba: ArrayBuffer;
+      width: number;
+      height: number;
+    }
+  | { type: "exportPlanned"; plan: ExportPlan }
+  | { type: "exportImageSet"; id: number }
+  | { type: "exportImageDropped"; id: number }
+  | { type: "bandDone"; band: number }
+  | {
+      type: "exportDone";
+      jpeg: ArrayBuffer;
       width: number;
       height: number;
     }

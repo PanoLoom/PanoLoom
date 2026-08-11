@@ -38,6 +38,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:wasm
       - run: pnpm typecheck
+      - run: pnpm --filter @panoloom/metadata test
       - run: pnpm --filter @panoloom/app build
       - name: Report wasm size
         run: ls -la packages/app/src/engine/pkg/*.wasm && gzip -k -9 packages/app/src/engine/pkg/panoloom_bg.wasm && ls -la packages/app/src/engine/pkg/*.gz

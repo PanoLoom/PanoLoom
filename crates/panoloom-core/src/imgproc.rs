@@ -103,6 +103,47 @@ pub fn resize_bilinear(src: &GrayImage, dst_w: usize, dst_h: usize) -> GrayImage
     GrayImage::new(dst_w, dst_h, data)
 }
 
+/// Row-range variant of [`resize_bilinear`]: computes only rows `[y0, y1)`
+/// of the virtual `dst_w x dst_h` result (banded compositing primitive).
+pub fn resize_bilinear_rows(
+    src: &GrayImage,
+    dst_w: usize,
+    dst_h: usize,
+    y0: usize,
+    y1: usize,
+) -> GrayImage {
+    assert!(dst_w > 0 && dst_h > 0 && y1 <= dst_h && y0 <= y1);
+    let scale_x = src.width as f64 / dst_w as f64;
+    let scale_y = src.height as f64 / dst_h as f64;
+    let rows = y1 - y0;
+    let mut data = vec![0u8; dst_w * rows];
+
+    for (row, dy) in (y0..y1).enumerate() {
+        let sy = (dy as f64 + 0.5) * scale_y - 0.5;
+        let ys = sy.floor() as isize;
+        let fy = (sy - ys as f64) as f32;
+        let y0c = ys.clamp(0, src.height as isize - 1) as usize;
+        let y1c = (ys + 1).clamp(0, src.height as isize - 1) as usize;
+        for dx in 0..dst_w {
+            let sx = (dx as f64 + 0.5) * scale_x - 0.5;
+            let xs = sx.floor() as isize;
+            let fx = (sx - xs as f64) as f32;
+            let x0c = xs.clamp(0, src.width as isize - 1) as usize;
+            let x1c = (xs + 1).clamp(0, src.width as isize - 1) as usize;
+
+            let p00 = src.at(x0c, y0c) as f32;
+            let p01 = src.at(x1c, y0c) as f32;
+            let p10 = src.at(x0c, y1c) as f32;
+            let p11 = src.at(x1c, y1c) as f32;
+            let top = p00 + (p01 - p00) * fx;
+            let bot = p10 + (p11 - p10) * fx;
+            let v = top + (bot - top) * fy;
+            data[row * dst_w + dx] = cv_round_f32(v).clamp(0, 255) as u8;
+        }
+    }
+    GrayImage::new(dst_w, rows, data)
+}
+
 /// `getGaussianKernel(7, 2.0)` computed in f64 exactly like OpenCV, cast to
 /// f32 (createGaussianKernels uses a CV_32F kernel for 8-bit images).
 fn gaussian_kernel_7_sigma2() -> [f32; 7] {

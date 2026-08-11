@@ -15,6 +15,7 @@ pub mod bundle;
 pub mod camera;
 pub mod cvmath;
 pub mod estimation;
+pub mod export;
 pub mod exposure;
 pub mod fast;
 pub mod homography;

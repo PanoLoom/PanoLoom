@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import "@fontsource-variable/archivo";
 import "@fontsource/martian-mono/400.css";
+import { injectGPano } from "@panoloom/metadata";
 import { EngineClient } from "./engine/client";
 import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
 import { Viewer } from "./components/Viewer";
@@ -17,12 +18,77 @@ type Phase =
   | { kind: "previewing" }
   | { kind: "preview"; rgba: ArrayBuffer; width: number; height: number };
 
+type ExportState =
+  | { kind: "idle" }
+  | { kind: "running"; band: number; bands: number }
+  | { kind: "encoding" };
+
+/** Decode a file at ORIGINAL resolution to RGBA for the export path. */
+async function decodeFull(
+  file: File,
+): Promise<{ rgba: ArrayBuffer; width: number; height: number }> {
+  const bmp = await createImageBitmap(file);
+  const canvas = new OffscreenCanvas(bmp.width, bmp.height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(bmp, 0, 0);
+  const data = ctx.getImageData(0, 0, bmp.width, bmp.height);
+  bmp.close();
+  return {
+    rgba: data.data.buffer as ArrayBuffer,
+    width: data.width,
+    height: data.height,
+  };
+}
+
+async function saveJpeg(bytes: Uint8Array, suggestedName: string) {
+  const blob = new Blob([bytes.buffer as ArrayBuffer], {
+    type: "image/jpeg",
+  });
+  const picker = (
+    window as unknown as {
+      showSaveFilePicker?: (o: object) => Promise<{
+        createWritable(): Promise<{
+          write(b: Blob): Promise<void>;
+          close(): Promise<void>;
+        }>;
+      }>;
+    }
+  ).showSaveFilePicker;
+  if (picker) {
+    try {
+      const handle = await picker({
+        suggestedName,
+        types: [
+          { description: "JPEG image", accept: { "image/jpeg": [".jpg"] } },
+        ],
+      });
+      const w = await handle.createWritable();
+      await w.write(blob);
+      await w.close();
+      return;
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return; // user cancelled
+      // fall through to anchor download
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = suggestedName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 export function App() {
   const engine = useRef<EngineClient | null>(null);
   const workScale = useRef<number | null>(null);
+  const files = useRef<Map<number, File>>(new Map());
   const [ready, setReady] = useState(false);
   const [shots, setShots] = useState<Shot[]>([]);
   const [phase, setPhase] = useState<Phase>({ kind: "empty" });
+  const [exporting, setExporting] = useState<ExportState>({ kind: "idle" });
+  // Canvas width cap for export; 65535 (the JPEG dimension limit) = native.
+  const [exportWidth, setExportWidth] = useState(65535);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -44,9 +110,9 @@ export function App() {
   }, [phase]);
 
   const importFiles = useCallback(
-    async (files: FileList | File[]) => {
+    async (picked: FileList | File[]) => {
       setError(null);
-      const list = [...files].filter((f) => /image\/(jpeg|png)/.test(f.type));
+      const list = [...picked].filter((f) => /image\/(jpeg|png)/.test(f.type));
       if (list.length === 0) return;
       for (const file of list) {
         try {
@@ -60,6 +126,7 @@ export function App() {
             img.posePrior,
           );
           const { rgba: _discarded, ...meta } = img;
+          files.current.set(img.id, file);
           setShots((s) => [...s, { ...meta, dropped: false, rescued: false }]);
           setPhase((p) => (p.kind === "empty" ? { kind: "loaded" } : p));
         } catch (e) {
@@ -92,8 +159,74 @@ export function App() {
     }
   }, [shots.length]);
 
-  const busy = phase.kind === "aligning" || phase.kind === "previewing";
+  const runExport = useCallback(async () => {
+    if (phase.kind !== "preview") return;
+    setError(null);
+    try {
+      const placed = shots.filter((s) => !s.dropped);
+      const plan = await engine.current!.beginExport(
+        exportWidth,
+        placed.map((s) => ({
+          id: s.id,
+          width: s.fullWidth,
+          height: s.fullHeight,
+        })),
+      );
+      setExporting({ kind: "running", band: 0, bands: plan.bands.length });
+
+      const loaded = new Set<number>();
+      for (let b = 0; b < plan.bands.length; b++) {
+        setExporting({ kind: "running", band: b, bands: plan.bands.length });
+        const needed = plan.bands[b]!.needed;
+        for (const id of needed) {
+          if (!loaded.has(id)) {
+            const full = await decodeFull(files.current.get(id)!);
+            await engine.current!.exportSetImage(
+              id,
+              full.rgba,
+              full.width,
+              full.height,
+            );
+            loaded.add(id);
+          }
+        }
+        await engine.current!.exportBand(b);
+        // Drop images the remaining bands don't need.
+        const stillNeeded = new Set(
+          plan.bands.slice(b + 1).flatMap((band) => band.needed),
+        );
+        for (const id of [...loaded]) {
+          if (!stillNeeded.has(id)) {
+            await engine.current!.exportDropImage(id);
+            loaded.delete(id);
+          }
+        }
+      }
+
+      setExporting({ kind: "encoding" });
+      const result = await engine.current!.finishExport(92);
+      const withXmp = injectGPano(new Uint8Array(result.jpeg), {
+        fullPanoWidthPixels: result.width,
+        fullPanoHeightPixels: result.height,
+        croppedAreaImageWidthPixels: result.width,
+        croppedAreaImageHeightPixels: result.height,
+        croppedAreaLeftPixels: 0,
+        croppedAreaTopPixels: 0,
+      });
+      await saveJpeg(withXmp, "panoloom-360.jpg");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting({ kind: "idle" });
+    }
+  }, [phase.kind, shots, exportWidth]);
+
+  const busy =
+    phase.kind === "aligning" ||
+    phase.kind === "previewing" ||
+    exporting.kind !== "idle";
   const canAlign = ready && shots.length >= 2 && !busy;
+  const canExport = ready && phase.kind === "preview" && !busy;
 
   return (
     <div className="frame">
@@ -104,9 +237,35 @@ export function App() {
         <span className="bar-status">
           {ready ? `engine ready` : `loading engine…`}
           {shots.length > 0 && ` · ${shots.length} shots`}
-          {busy && ` · ${elapsed.toFixed(1)}s`}
+          {phase.kind === "aligning" && ` · ${elapsed.toFixed(1)}s`}
+          {exporting.kind === "running" &&
+            ` · exporting band ${exporting.band + 1}/${exporting.bands}`}
+          {exporting.kind === "encoding" && ` · encoding JPEG`}
         </span>
         <span className="bar-spacer" />
+        {phase.kind === "preview" && (
+          <>
+            <select
+              className="export-size"
+              disabled={!canExport}
+              value={exportWidth}
+              onChange={(e) => setExportWidth(Number(e.target.value))}
+              title="Panorama width"
+            >
+              <option value={65535}>Full resolution</option>
+              <option value={8192}>8192 px</option>
+              <option value={4096}>4096 px</option>
+            </select>
+            <button
+              className="align-btn ghost"
+              disabled={!canExport}
+              onClick={() => void runExport()}
+              title="360° JPEG with Photo Sphere metadata"
+            >
+              Export JPEG
+            </button>
+          </>
+        )}
         <button className="align-btn" disabled={!canAlign} onClick={runAlign}>
           Align &amp; Preview
         </button>

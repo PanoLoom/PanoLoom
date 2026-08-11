@@ -1,0 +1,432 @@
+//! Full-resolution banded export.
+//!
+//! A full-res panorama (e.g. 17000x8500) cannot be composed in one piece in
+//! wasm memory (MultiBandBlender pyramids alone would exceed 1.5 GB), so
+//! the canvas is composited in horizontal BANDS: for each band, only the
+//! contributing full-resolution sources are needed, each warped just for
+//! that band's rows (`SphericalWarper::warp_rows`). Seams and gains are
+//! computed once at seam scale (shared `pipeline::seam_stage`, including
+//! the wrap unrolling), and the finished canvas is JPEG-encoded in wasm so
+//! only the compressed bytes cross to JS.
+
+#![allow(clippy::needless_range_loop)]
+
+use std::collections::HashMap;
+
+use crate::blend::{num_bands_for, result_roi, MultiBandBlender};
+use crate::camera::CameraParams;
+use crate::exposure::{GainMap, RgbImage};
+use crate::imgproc::{resize_bilinear_rows, GrayImage};
+use crate::pipeline::{camera_k_scaled, dilate3, seam_stage, snap_scale, Alignment, SourceImage};
+use crate::warp::{Border, Interp, PixelImage, SphericalWarper};
+
+/// Band height in canvas rows (before padding). Padding must exceed the
+/// multiband blend influence radius (~2^bands).
+const BAND_H: usize = 768;
+const BAND_PAD: usize = 256;
+
+pub struct ExportBand {
+    pub y0: usize,
+    pub y1: usize,
+    /// Source image ids whose pixels this band needs.
+    pub needed: Vec<u32>,
+}
+
+struct EntryGeom {
+    src_idx: usize,
+    /// Compose-scale warp ROI (x with dup offset applied, y, w, h).
+    roi: (i32, i32, i32, i32),
+}
+
+pub struct Exporter {
+    // Layout.
+    canvas_w: usize,
+    canvas_h: usize,
+    compose_scale: f64,
+    ids: Vec<u32>,
+    cameras: Vec<CameraParams>,
+    /// K multiplier per aligned image for FULL-RES sources.
+    k_mul: Vec<f64>,
+    entries: Vec<EntryGeom>,
+    gain_maps: Vec<GainMap>,
+    seam_masks_dilated: Vec<GrayImage>,
+    bands: Vec<ExportBand>,
+    strip: (i32, i32, usize, usize),
+    ext_start: i32,
+    ext_trim: i32,
+    originals_end: i32,
+    mb_bands: usize,
+    // State.
+    canvas: Vec<u8>,
+    covered: Vec<u8>, // 1 byte per canvas pixel (coverage)
+    loaded: HashMap<u32, PixelImage>,
+    bands_done: Vec<bool>,
+}
+
+impl Exporter {
+    /// `reg_sources` are the registration-scale images already in the
+    /// engine (for the seam stage); `full_sizes` maps every aligned id to
+    /// its ORIGINAL pixel dimensions; `target_width` caps the canvas.
+    pub fn new(
+        reg_sources: &[SourceImage],
+        alignment: &Alignment,
+        full_sizes: &[(u32, u32, u32)],
+        target_width: usize,
+    ) -> Result<Self, String> {
+        let n = alignment.images.len();
+        let mut srcs: Vec<&PixelImage> = Vec::with_capacity(n);
+        let mut k_mul = Vec::with_capacity(n);
+        let mut ids = Vec::with_capacity(n);
+        let mut cameras = Vec::with_capacity(n);
+        for ai in &alignment.images {
+            let s = reg_sources
+                .iter()
+                .find(|s| s.id == ai.id)
+                .ok_or("missing registration source")?;
+            let (_, fw, _fh) = full_sizes
+                .iter()
+                .find(|(id, _, _)| *id == ai.id)
+                .ok_or("missing full size")?;
+            srcs.push(&s.rgb);
+            k_mul.push(*fw as f64 / s.rgb.width as f64);
+            ids.push(ai.id);
+            cameras.push(ai.camera);
+        }
+
+        // Canvas scale: full native resolution (largest source factor),
+        // capped by the requested width.
+        let native = alignment.warped_image_scale * k_mul.iter().cloned().fold(1.0, f64::max);
+        let native_w = (2.0 * std::f64::consts::PI * native).floor() as usize;
+        let compose_scale = snap_scale(if native_w > target_width {
+            target_width as f64 / (2.0 * std::f64::consts::PI)
+        } else {
+            native
+        });
+        let canvas_w = (2.0 * std::f64::consts::PI * compose_scale).floor() as usize & !1;
+        let canvas_h = canvas_w / 2;
+
+        // Seam stage (shared with preview): gains + unrolled seams.
+        let stage = seam_stage(&srcs, alignment);
+        let seam_masks_dilated: Vec<GrayImage> = stage.e_seam_masks.iter().map(dilate3).collect();
+
+        // Compose-scale ROIs per entry. K multiplier for a full-res source:
+        // camera params are in registration px, the full-res source is
+        // k_mul times larger, and the warper output scale handles the rest.
+        let mut warper = SphericalWarper::new(compose_scale as f32);
+        let period_comp = canvas_w as i32;
+        let mut entries = Vec::with_capacity(stage.entries.len());
+        for &(i, dup) in &stage.entries {
+            let (_, fw, fh) = full_sizes.iter().find(|(id, _, _)| *id == ids[i]).unwrap();
+            let k = camera_k_scaled(&cameras[i], k_mul[i]);
+            let (x, y, w, h) = warper.warp_roi(*fw as usize, *fh as usize, &k, &cameras[i].r);
+            entries.push(EntryGeom {
+                src_idx: i,
+                roi: (x + if dup { period_comp } else { 0 }, y, w, h),
+            });
+        }
+
+        let e_corners: Vec<(i32, i32)> = entries.iter().map(|e| (e.roi.0, e.roi.1)).collect();
+        let e_sizes: Vec<(i32, i32)> = entries.iter().map(|e| (e.roi.2, e.roi.3)).collect();
+        let strip = result_roi(&e_corners, &e_sizes);
+        let originals_end: i32 = entries
+            .iter()
+            .zip(&stage.entries)
+            .filter(|(_, &(_, dup))| !dup)
+            .map(|(e, _)| e.roi.0 + e.roi.2)
+            .max()
+            .unwrap()
+            - strip.0;
+        let ext_start: i32 = entries
+            .iter()
+            .zip(&stage.entries)
+            .filter(|(_, &(_, dup))| dup)
+            .map(|(e, _)| e.roi.0 - strip.0)
+            .min()
+            .unwrap_or(strip.2 as i32);
+        let ext_len = strip.2 as i32 - ext_start;
+        let ext_trim = 64.min(ext_len / 2).max(0);
+
+        // Bands over canvas rows; needed = sources of entries intersecting
+        // the padded band (v coordinates == canvas rows).
+        let mut bands = Vec::new();
+        let mut y = 0usize;
+        while y < canvas_h {
+            let y1 = (y + BAND_H).min(canvas_h);
+            let (py0, py1) = (y.saturating_sub(BAND_PAD) as i32, (y1 + BAND_PAD) as i32);
+            let mut needed: Vec<u32> = entries
+                .iter()
+                .filter(|e| e.roi.1 < py1 && e.roi.1 + e.roi.3 > py0)
+                .map(|e| ids[e.src_idx])
+                .collect();
+            needed.sort_unstable();
+            needed.dedup();
+            bands.push(ExportBand { y0: y, y1, needed });
+            y = y1;
+        }
+
+        let mb_bands = num_bands_for(strip.2, canvas_h);
+        Ok(Self {
+            canvas_w,
+            canvas_h,
+            compose_scale,
+            ids,
+            cameras,
+            k_mul,
+            entries,
+            gain_maps: stage.compensator.gain_maps().to_vec(),
+            seam_masks_dilated,
+            bands_done: vec![false; bands.len()],
+            bands,
+            strip,
+            ext_start,
+            ext_trim,
+            originals_end,
+            mb_bands,
+            canvas: Vec::new(),
+            covered: Vec::new(),
+            loaded: HashMap::new(),
+        })
+    }
+
+    pub fn canvas_size(&self) -> (usize, usize) {
+        (self.canvas_w, self.canvas_h)
+    }
+
+    pub fn bands(&self) -> &[ExportBand] {
+        &self.bands
+    }
+
+    pub fn set_full_image(&mut self, id: u32, img: PixelImage) -> Result<(), String> {
+        if !self.ids.contains(&id) {
+            return Err("unknown image id".into());
+        }
+        self.loaded.insert(id, img);
+        Ok(())
+    }
+
+    pub fn drop_full_image(&mut self, id: u32) {
+        self.loaded.remove(&id);
+    }
+
+    pub fn composite_band(&mut self, b: usize) -> Result<(), String> {
+        let (band_y0, band_y1, needed) = {
+            let band = self.bands.get(b).ok_or("band out of range")?;
+            (band.y0, band.y1, band.needed.clone())
+        };
+        for id in &needed {
+            if !self.loaded.contains_key(id) {
+                return Err(format!("image {id} not loaded"));
+            }
+        }
+        if self.canvas.is_empty() {
+            self.canvas = vec![0u8; self.canvas_w * self.canvas_h * 3];
+            self.covered = vec![0u8; self.canvas_w * self.canvas_h];
+        }
+
+        let (py0, py1) = (
+            band_y0.saturating_sub(BAND_PAD) as i32,
+            ((band_y1 + BAND_PAD).min(self.canvas_h)) as i32,
+        );
+        let mut blender = MultiBandBlender::new(self.mb_bands);
+        blender.prepare(self.strip.0, py0, self.strip.2, (py1 - py0) as usize);
+
+        let mut warper = SphericalWarper::new(self.compose_scale as f32);
+        for e in 0..self.entries.len() {
+            let geom = &self.entries[e];
+            let i = geom.src_idx;
+            let (rx, ry, rw, rh) = geom.roi;
+            if ry >= py1 || ry + rh <= py0 {
+                continue;
+            }
+            let src = &self.loaded[&self.ids[i]];
+            let ry0 = (py0 - ry).max(0) as usize;
+            let ry1 = ((py1 - ry).max(0) as usize).min(rh as usize);
+            if ry1 <= ry0 {
+                continue;
+            }
+
+            let k = camera_k_scaled(&self.cameras[i], self.k_mul[i]);
+            let (_, w_img) = warper.warp_rows(
+                src,
+                &k,
+                &self.cameras[i].r,
+                Interp::Linear,
+                Border::Reflect,
+                ry0,
+                ry1,
+            );
+            let mask_src = PixelImage::new(
+                src.width,
+                src.height,
+                1,
+                vec![255u8; src.width * src.height],
+            );
+            let (_, w_mask) = warper.warp_rows(
+                &mask_src,
+                &k,
+                &self.cameras[i].r,
+                Interp::Nearest,
+                Border::Constant0,
+                ry0,
+                ry1,
+            );
+
+            // Gains (seam-scale block maps) sampled for these ROI rows.
+            let mut rgb = RgbImage::new(w_img.width, w_img.height, w_img.data);
+            apply_gain_rows(&self.gain_maps[i], &mut rgb, rw as usize, rh as usize, ry0);
+
+            // Seam mask rows for this entry, upscaled to the ROI dims.
+            let up = resize_bilinear_rows(
+                &self.seam_masks_dilated[e],
+                rw as usize,
+                rh as usize,
+                ry0,
+                ry1,
+            );
+            let mut final_mask = vec![0u8; w_mask.width * w_mask.height];
+            for p in 0..final_mask.len() {
+                final_mask[p] = up.data[p] & w_mask.data[p];
+            }
+            blender.feed(
+                &rgb.data,
+                rgb.width,
+                rgb.height,
+                &GrayImage::new(w_mask.width, w_mask.height, final_mask),
+                (rx, ry + ry0 as i32),
+            );
+        }
+
+        let (blended, coverage) = blender.blend();
+        let bw = self.strip.2;
+        let bh = (py1 - py0) as usize;
+
+        // Paste this band's UNPADDED rows into the canvas, extension first
+        // (see pipeline.rs — cross-wrap blended region wins at the wrap).
+        let off_x = (-std::f64::consts::PI * self.compose_scale) as i32;
+        let ranges: [(i32, i32); 2] = [
+            if self.strip.2 as i32 - self.ext_start > 0 {
+                (self.ext_start, self.strip.2 as i32 - self.ext_trim)
+            } else {
+                (0, 0)
+            },
+            (0, self.originals_end),
+        ];
+        for (x0, x1) in ranges {
+            let (x0, x1) = (x0.max(0) as usize, (x1.max(0) as usize).min(bw));
+            for by in band_y0..band_y1 {
+                let sy = by as i32 - py0;
+                if sy < 0 || sy >= bh as i32 {
+                    continue;
+                }
+                let sy = sy as usize;
+                for x in x0..x1 {
+                    if coverage.data[sy * bw + x] == 0 {
+                        continue;
+                    }
+                    let mut cx = self.strip.0 - off_x + x as i32;
+                    let w = self.canvas_w as i32;
+                    cx = ((cx % w) + w) % w;
+                    let ci = by * self.canvas_w + cx as usize;
+                    if self.covered[ci] != 0 {
+                        continue;
+                    }
+                    let src = (sy * bw + x) * 3;
+                    self.canvas[ci * 3..ci * 3 + 3].copy_from_slice(&blended[src..src + 3]);
+                    self.covered[ci] = 1;
+                }
+            }
+        }
+
+        self.bands_done[b] = true;
+        Ok(())
+    }
+
+    /// Finish: meridian repair + edge equalization, then JPEG encode.
+    /// Returns (jpeg bytes, width, height).
+    pub fn finish(mut self, quality: u8) -> Result<(Vec<u8>, usize, usize), String> {
+        if self.bands_done.iter().any(|d| !d) {
+            return Err("not all bands composited".into());
+        }
+        let (w, h) = (self.canvas_w, self.canvas_h);
+        if w >= 3 {
+            for y in 0..h {
+                let row = y * w;
+                // Rebuild uncovered meridian pixels from sphere neighbors.
+                if self.covered[row] == 0 {
+                    let (l, r) = ((row + 1) * 3, (row + w - 1) * 3);
+                    let (lc, rc) = (self.covered[row + 1], self.covered[row + w - 1]);
+                    if lc != 0 && rc != 0 {
+                        for c in 0..3 {
+                            self.canvas[row * 3 + c] =
+                                ((self.canvas[l + c] as u16 + self.canvas[r + c] as u16) / 2) as u8;
+                        }
+                    } else if lc != 0 {
+                        self.canvas.copy_within(l..l + 3, row * 3);
+                    } else if rc != 0 {
+                        self.canvas.copy_within(r..r + 3, row * 3);
+                    }
+                }
+                // Equalize the wrap edges (viewer clamp-filter proofing).
+                let (a, bx) = (row * 3, (row + w - 1) * 3);
+                if self.covered[row] != 0 && self.covered[row + w - 1] != 0 {
+                    for c in 0..3 {
+                        let avg =
+                            ((self.canvas[a + c] as u16 + self.canvas[bx + c] as u16) / 2) as u8;
+                        self.canvas[a + c] = avg;
+                        self.canvas[bx + c] = avg;
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        let encoder = jpeg_encoder::Encoder::new(&mut out, quality);
+        encoder
+            .encode(
+                &self.canvas,
+                w as u16,
+                h as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .map_err(|e| format!("jpeg encode: {e}"))?;
+        Ok((out, w, h))
+    }
+}
+
+/// Row-aware BlocksGainCompensator::apply — samples the block-resolution
+/// gain map with the SAME resize mapping as exposure.rs, but only for ROI
+/// rows [y0, y0+img.height) of a full_w x full_h target.
+fn apply_gain_rows(gm: &GainMap, img: &mut RgbImage, full_w: usize, full_h: usize, y0: usize) {
+    let coeff = |src_len: usize, dst_len: usize, d: usize| -> (usize, usize, f32, f32) {
+        let scale = src_len as f64 / dst_len as f64;
+        let f = ((d as f64 + 0.5) * scale - 0.5) as f32;
+        let mut s = f.floor() as i64;
+        let mut f = f - s as f32;
+        if s < 0 {
+            s = 0;
+            f = 0.0;
+        }
+        if s >= src_len as i64 - 1 {
+            s = src_len as i64 - 1;
+            f = 0.0;
+        }
+        let s = s as usize;
+        (s, (s + 1).min(src_len - 1), 1.0 - f, f)
+    };
+    let xc: Vec<(usize, usize, f32, f32)> =
+        (0..full_w).map(|x| coeff(gm.width, full_w, x)).collect();
+    for row in 0..img.height {
+        let (sy0, sy1, b0, b1) = coeff(gm.height, full_h, y0 + row);
+        let r0 = &gm.data[sy0 * gm.width..(sy0 + 1) * gm.width];
+        let r1 = &gm.data[sy1 * gm.width..(sy1 + 1) * gm.width];
+        for x in 0..img.width.min(full_w) {
+            let (sx0, sx1, a0, a1) = xc[x];
+            let g = (r0[sx0] * a0 + r0[sx1] * a1) * b0 + (r1[sx0] * a0 + r1[sx1] * a1) * b1;
+            let p = (row * img.width + x) * 3;
+            for c in 0..3 {
+                let v = img.data[p + c] as f32 * g;
+                img.data[p + c] = crate::cvmath::cv_round_f32(v).clamp(0, 255) as u8;
+            }
+        }
+    }
+}

@@ -60,6 +60,47 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         p.free();
         break;
       }
+      case "beginExport": {
+        const plan = engine!.begin_export(
+          msg.targetWidth,
+          Uint32Array.from(msg.fullSizes.map((s) => s.id)),
+          Uint32Array.from(msg.fullSizes.map((s) => s.width)),
+          Uint32Array.from(msg.fullSizes.map((s) => s.height)),
+        );
+        post({ type: "exportPlanned", plan: JSON.parse(plan) });
+        break;
+      }
+      case "exportSetImage": {
+        engine!.export_set_image(
+          msg.id,
+          new Uint8Array(msg.rgba),
+          msg.width,
+          msg.height,
+        );
+        post({ type: "exportImageSet", id: msg.id });
+        break;
+      }
+      case "exportDropImage": {
+        engine!.export_drop_image(msg.id);
+        post({ type: "exportImageDropped", id: msg.id });
+        break;
+      }
+      case "exportBand": {
+        engine!.export_band(msg.band);
+        post({ type: "bandDone", band: msg.band });
+        break;
+      }
+      case "finishExport": {
+        const r = engine!.finish_export(msg.quality);
+        const jpeg = r.take_jpeg();
+        const buf = jpeg.buffer as ArrayBuffer;
+        post(
+          { type: "exportDone", jpeg: buf, width: r.width, height: r.height },
+          [buf],
+        );
+        r.free();
+        break;
+      }
     }
   } catch (err) {
     post({

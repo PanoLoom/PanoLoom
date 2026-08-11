@@ -86,6 +86,42 @@ export class EngineClient {
     return { rgba: r.rgba, width: r.width, height: r.height };
   }
 
+  async beginExport(
+    targetWidth: number,
+    fullSizes: { id: number; width: number; height: number }[],
+  ): Promise<import("./protocol").ExportPlan> {
+    const r = await this.send({ type: "beginExport", targetWidth, fullSizes });
+    if (r.type !== "exportPlanned") throw new Error("unexpected response");
+    return r.plan;
+  }
+
+  async exportSetImage(
+    id: number,
+    rgba: ArrayBuffer,
+    width: number,
+    height: number,
+  ): Promise<void> {
+    await this.send({ type: "exportSetImage", id, rgba, width, height }, [
+      rgba,
+    ]);
+  }
+
+  async exportDropImage(id: number): Promise<void> {
+    await this.send({ type: "exportDropImage", id });
+  }
+
+  async exportBand(band: number): Promise<void> {
+    await this.send({ type: "exportBand", band });
+  }
+
+  async finishExport(
+    quality: number,
+  ): Promise<{ jpeg: ArrayBuffer; width: number; height: number }> {
+    const r = await this.send({ type: "finishExport", quality });
+    if (r.type !== "exportDone") throw new Error("unexpected response");
+    return { jpeg: r.jpeg, width: r.width, height: r.height };
+  }
+
   dispose() {
     this.worker.terminate();
   }

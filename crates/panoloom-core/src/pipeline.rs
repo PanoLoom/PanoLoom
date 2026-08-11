@@ -373,6 +373,113 @@ pub fn debug_prior_fit_residual(sources: &[SourceImage], solved: &[AlignedImage]
     Some(residuals[residuals.len() / 2])
 }
 
+/// Snaps a warp scale so one full 360° period is an EXACT (even) integer
+/// number of pixels: wrap folding and the 2:1 canvas are then exact,
+/// eliminating sub-pixel shear at the meridian.
+pub(crate) fn snap_scale(s: f64) -> f64 {
+    let w = ((2.0 * std::f64::consts::PI * s).floor() as usize) & !1;
+    w as f64 / (2.0 * std::f64::consts::PI)
+}
+
+/// K matrix for a camera whose focal/pp are scaled by `m` (f32, like the
+/// oracle's numpy path).
+pub(crate) fn camera_k_scaled(c: &CameraParams, m: f64) -> [[f32; 3]; 3] {
+    [
+        [(c.focal * m) as f32, 0.0, (c.ppx * m) as f32],
+        [0.0, (c.focal * m) as f32, (c.ppy * m) as f32],
+        [0.0, 0.0, 1.0],
+    ]
+}
+
+/// Output of the seam-scale stage shared by preview and export: gains fed
+/// from the original layout, graph-cut seams computed over the UNROLLED
+/// layout (wrap-crossing images duplicated one period right).
+pub(crate) struct SeamStage {
+    /// (source/aligned index, duplicated one period to the right?)
+    pub entries: Vec<(usize, bool)>,
+    pub compensator: BlocksGainCompensator,
+    pub e_seam_masks: Vec<GrayImage>,
+}
+
+pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> SeamStage {
+    let n = alignment.images.len();
+    let seam_scale = snap_scale(alignment.warped_image_scale * SEAM_FROM_WORK_SCALE);
+    let seam_mul = seam_scale / alignment.warped_image_scale;
+
+    let mut seam_warper = SphericalWarper::new(seam_scale as f32);
+    let mut s_corners = Vec::new();
+    let mut s_imgs: Vec<PixelImage> = Vec::new();
+    let mut s_masks: Vec<GrayImage> = Vec::new();
+    for (src, ai) in sources.iter().zip(&alignment.images) {
+        let (sw, sh) = (
+            ((src.width as f64) * seam_mul).round().max(2.0) as usize,
+            ((src.height as f64) * seam_mul).round().max(2.0) as usize,
+        );
+        let small = resize_rgb(src, sw, sh);
+        let k = camera_k_scaled(&ai.camera, seam_mul);
+        let (tl, w_img) =
+            seam_warper.warp(&small, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
+        let mask_src = PixelImage::new(sw, sh, 1, vec![255u8; sw * sh]);
+        let (_, w_mask) = seam_warper.warp(
+            &mask_src,
+            &k,
+            &ai.camera.r,
+            Interp::Nearest,
+            Border::Constant0,
+        );
+        s_corners.push(tl);
+        s_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
+        s_imgs.push(w_img);
+    }
+    // Rescued shots fill holes only (see suppress_rescued_masks).
+    suppress_rescued_masks(&mut s_masks, &s_corners, alignment, 2);
+
+    let s_rgb: Vec<RgbImage> = s_imgs
+        .iter()
+        .map(|w| RgbImage::new(w.width, w.height, w.data.clone()))
+        .collect();
+    let compensator = BlocksGainCompensator::feed(&s_corners, &s_rgb, &s_masks);
+
+    // Wrap unrolling: duplicate left-end images one period right so seams
+    // and blending continue across the 360° boundary.
+    let s_sizes: Vec<(i32, i32)> = s_imgs
+        .iter()
+        .map(|w| (w.width as i32, w.height as i32))
+        .collect();
+    let period_seam = (2.0 * std::f64::consts::PI * seam_scale).floor() as i32;
+    let orig_strip = result_roi(&s_corners, &s_sizes);
+    let full_wrap = orig_strip.2 as i32 >= period_seam - 2;
+    let max_w_seam = s_sizes.iter().map(|s| s.0).max().unwrap_or(0);
+    let mut entries: Vec<(usize, bool)> = (0..n).map(|i| (i, false)).collect();
+    if full_wrap {
+        for i in 0..n {
+            if s_corners[i].0 - orig_strip.0 < max_w_seam {
+                entries.push((i, true));
+            }
+        }
+    }
+
+    let e_imgs: Vec<PixelImage> = entries.iter().map(|&(i, _)| s_imgs[i].clone()).collect();
+    let e_corners: Vec<(i32, i32)> = entries
+        .iter()
+        .map(|&(i, dup)| {
+            (
+                s_corners[i].0 + if dup { period_seam } else { 0 },
+                s_corners[i].1,
+            )
+        })
+        .collect();
+    let mut e_seam_masks: Vec<GrayImage> =
+        entries.iter().map(|&(i, _)| s_masks[i].clone()).collect();
+    find_seams_graph_cut_color(&e_imgs, &e_corners, &mut e_seam_masks);
+
+    SeamStage {
+        entries,
+        compensator,
+        e_seam_masks,
+    }
+}
+
 pub struct Preview {
     /// Full 360x180 equirectangular RGBA canvas (uncovered pixels alpha 0).
     pub rgba: Vec<u8>,
@@ -402,107 +509,14 @@ pub fn render_preview(
     } else {
         alignment.warped_image_scale
     };
-    // Snap both scales so one full 360° period is an EXACT (even) integer
-    // number of pixels: wrap folding and the 2:1 canvas are then exact,
-    // eliminating sub-pixel shear at the meridian (visible as specks on
-    // high-contrast silhouettes crossing the wrap).
-    let snap = |s: f64| -> f64 {
-        let w = ((2.0 * std::f64::consts::PI * s).floor() as usize) & !1;
-        w as f64 / (2.0 * std::f64::consts::PI)
-    };
-    let compose_scale = snap(compose_scale);
-    let seam_scale = snap(compose_scale * SEAM_FROM_WORK_SCALE);
+    let compose_scale = snap_scale(compose_scale);
 
-    let k_for = |c: &CameraParams, m: f64| -> [[f32; 3]; 3] {
-        [
-            [(c.focal * m) as f32, 0.0, (c.ppx * m) as f32],
-            [0.0, (c.focal * m) as f32, (c.ppy * m) as f32],
-            [0.0, 0.0, 1.0],
-        ]
-    };
-
-    // --- stage 1: seam scale — warp, feed gains, find seams ---
-    let seam_mul = seam_scale / alignment.warped_image_scale;
-    let mut seam_warper = SphericalWarper::new(seam_scale as f32);
-    let mut s_corners = Vec::new();
-    let mut s_imgs: Vec<PixelImage> = Vec::new();
-    let mut s_masks: Vec<GrayImage> = Vec::new();
-    for (src, ai) in sources.iter().zip(&alignment.images) {
-        let (sw, sh) = (
-            ((src.width as f64) * seam_mul).round().max(2.0) as usize,
-            ((src.height as f64) * seam_mul).round().max(2.0) as usize,
-        );
-        let small = resize_rgb(src, sw, sh);
-        let k = k_for(&ai.camera, seam_mul);
-        let (tl, w_img) =
-            seam_warper.warp(&small, &k, &ai.camera.r, Interp::Linear, Border::Reflect);
-        let mask_src = PixelImage::new(sw, sh, 1, vec![255u8; sw * sh]);
-        let (_, w_mask) = seam_warper.warp(
-            &mask_src,
-            &k,
-            &ai.camera.r,
-            Interp::Nearest,
-            Border::Constant0,
-        );
-        s_corners.push(tl);
-        s_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
-        s_imgs.push(w_img);
-    }
-    // Rescued shots are placed from pose metadata (~1° accuracy) — good
-    // enough to fill featureless holes, not good enough to overlap matched
-    // shots (a 1° offset ghosts hard edges like ridge lines). Suppress
-    // their masks wherever matched coverage exists, keeping a small eroded
-    // overlap band for blending.
-    suppress_rescued_masks(&mut s_masks, &s_corners, alignment, 2);
-
-    let s_rgb: Vec<RgbImage> = s_imgs
-        .iter()
-        .map(|w| RgbImage::new(w.width, w.height, w.data.clone()))
-        .collect();
-    let compensator = BlocksGainCompensator::feed(&s_corners, &s_rgb, &s_masks);
-
-    // --- wrap unrolling ---
-    // A planar pipeline cannot blend across the 360° wrap: seams stop and
-    // exposure steps at the meridian, and the strip's outer columns carry
-    // multiband edge artifacts. Standard fix: UNROLL the cylinder — images
-    // near the strip's left end are duplicated one full period to the
-    // right, so seam finding and blending continue naturally across the
-    // wrap; the paste later prefers that seamless extension region.
-    let s_sizes: Vec<(i32, i32)> = s_imgs
-        .iter()
-        .map(|w| (w.width as i32, w.height as i32))
-        .collect();
-    let period_seam = (2.0 * std::f64::consts::PI * seam_scale).floor() as i32;
-    let orig_strip = result_roi(&s_corners, &s_sizes);
-    let full_wrap = orig_strip.2 as i32 >= period_seam - 2;
-    let max_w_seam = s_sizes.iter().map(|s| s.0).max().unwrap_or(0);
-    // (source index, duplicated one period to the right?)
-    let mut entries: Vec<(usize, bool)> = (0..n).map(|i| (i, false)).collect();
-    if full_wrap {
-        for i in 0..n {
-            if s_corners[i].0 - orig_strip.0 < max_w_seam {
-                entries.push((i, true));
-            }
-        }
-    }
-
-    // Seam finding over the unrolled layout (duplicates get independent
-    // masks — their seams against right-end images ARE the wrap seams).
-    let e_imgs: Vec<PixelImage> = entries.iter().map(|&(i, _)| s_imgs[i].clone()).collect();
-    let e_corners: Vec<(i32, i32)> = entries
-        .iter()
-        .map(|&(i, dup)| {
-            (
-                s_corners[i].0 + if dup { period_seam } else { 0 },
-                s_corners[i].1,
-            )
-        })
-        .collect();
-    let mut e_seam_masks: Vec<GrayImage> =
-        entries.iter().map(|&(i, _)| s_masks[i].clone()).collect();
-    find_seams_graph_cut_color(&e_imgs, &e_corners, &mut e_seam_masks);
+    let stage = seam_stage(sources, alignment);
+    let (entries, compensator, e_seam_masks) =
+        (stage.entries, stage.compensator, stage.e_seam_masks);
 
     // --- stage 2: compose scale — warp sharp, apply gains, blend ---
+    let k_for = camera_k_scaled;
     let compose_mul = compose_scale / alignment.warped_image_scale;
     let period_comp = (2.0 * std::f64::consts::PI * compose_scale).floor() as i32;
     let mut warper = SphericalWarper::new(compose_scale as f32);
@@ -807,7 +821,7 @@ fn resize_rgb(src: &PixelImage, dst_w: usize, dst_h: usize) -> PixelImage {
 }
 
 /// 3x3 rect dilation (cv2.dilate(mask, None), one iteration).
-fn dilate3(mask: &GrayImage) -> GrayImage {
+pub(crate) fn dilate3(mask: &GrayImage) -> GrayImage {
     let (w, h) = (mask.width, mask.height);
     let mut out = vec![0u8; w * h];
     for y in 0..h {

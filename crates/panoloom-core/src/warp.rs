@@ -254,6 +254,40 @@ impl SphericalWarper {
         }
         ((tl.0, tl.1), dst)
     }
+
+    /// Partial `warp`: renders only ROI rows `[y0, y1)` (relative to the
+    /// image's warp ROI) — the streaming primitive for banded compositing.
+    /// Returns (roi_tl, rendered rows as an image of height y1-y0).
+    #[allow(clippy::too_many_arguments)]
+    pub fn warp_rows(
+        &mut self,
+        src: &PixelImage,
+        k: &Mat3f,
+        r: &Mat3f,
+        interp: Interp,
+        border: Border,
+        y0: usize,
+        y1: usize,
+    ) -> ((i32, i32), PixelImage) {
+        self.set_camera(k, r);
+        let (tl, br) = self.detect_result_roi(src.width, src.height);
+        let dw = (br.0 - tl.0 + 1) as usize;
+        let dh = (br.1 - tl.1 + 1) as usize;
+        let (y0, y1) = (y0.min(dh), y1.min(dh));
+        let rows = y1.saturating_sub(y0);
+
+        let mut dst = PixelImage::new(dw, rows, src.channels, vec![0u8; dw * rows * src.channels]);
+        for (out_row, dv) in (y0..y1).enumerate() {
+            for du in 0..dw {
+                let (sx, sy) =
+                    self.map_backward((tl.0 + du as i32) as f32, (tl.1 + dv as i32) as f32);
+                let out = &mut dst.data
+                    [(out_row * dw + du) * src.channels..(out_row * dw + du + 1) * src.channels];
+                sample(src, sx, sy, interp, border, out);
+            }
+        }
+        ((tl.0, tl.1), dst)
+    }
 }
 
 #[inline]

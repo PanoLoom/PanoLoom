@@ -4,6 +4,7 @@
 //! driven from a Web Worker. Pixels cross as `Uint8Array`s (RGBA in, RGBA
 //! out); structured results cross as JSON strings.
 
+use panoloom_core::export::Exporter;
 use panoloom_core::pipeline::{align, render_preview, Alignment, SourceImage};
 use panoloom_core::warp::PixelImage;
 use wasm_bindgen::prelude::*;
@@ -18,6 +19,33 @@ pub fn engine_version() -> String {
 pub struct Engine {
     sources: Vec<SourceImage>,
     alignment: Option<Alignment>,
+    exporter: Option<Exporter>,
+}
+
+/// Finished export: JPEG bytes + dimensions.
+#[wasm_bindgen]
+pub struct ExportResult {
+    width: u32,
+    height: u32,
+    jpeg: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl ExportResult {
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Moves the bytes out (call once).
+    pub fn take_jpeg(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.jpeg)
+    }
 }
 
 #[wasm_bindgen]
@@ -58,7 +86,116 @@ impl Engine {
         Engine {
             sources: Vec::new(),
             alignment: None,
+            exporter: None,
         }
+    }
+
+    /// Starts a full-resolution export. `ids/widths/heights` describe the
+    /// ORIGINAL dimensions of every aligned image. Returns the band plan:
+    /// `{"width":..,"height":..,"bands":[{"y0":..,"y1":..,"needed":[ids]}]}`.
+    pub fn begin_export(
+        &mut self,
+        target_width: u32,
+        ids: Vec<u32>,
+        widths: Vec<u32>,
+        heights: Vec<u32>,
+    ) -> Result<String, JsError> {
+        let alignment = self
+            .alignment
+            .as_ref()
+            .ok_or_else(|| JsError::new("align() has not succeeded yet"))?;
+        if ids.len() != widths.len() || ids.len() != heights.len() {
+            return Err(JsError::new("ids/widths/heights length mismatch"));
+        }
+        let full_sizes: Vec<(u32, u32, u32)> = ids
+            .iter()
+            .zip(&widths)
+            .zip(&heights)
+            .map(|((&i, &w), &h)| (i, w, h))
+            .collect();
+        let exporter = Exporter::new(&self.sources, alignment, &full_sizes, target_width as usize)
+            .map_err(|e| JsError::new(&e))?;
+
+        let (w, h) = exporter.canvas_size();
+        let bands: Vec<String> = exporter
+            .bands()
+            .iter()
+            .map(|b| {
+                let needed: Vec<String> = b.needed.iter().map(|i| i.to_string()).collect();
+                format!(
+                    "{{\"y0\":{},\"y1\":{},\"needed\":[{}]}}",
+                    b.y0,
+                    b.y1,
+                    needed.join(",")
+                )
+            })
+            .collect();
+        let plan = format!(
+            "{{\"width\":{w},\"height\":{h},\"bands\":[{}]}}",
+            bands.join(",")
+        );
+        self.exporter = Some(exporter);
+        Ok(plan)
+    }
+
+    /// Provides a FULL-RESOLUTION source image (RGBA8) for the export.
+    pub fn export_set_image(
+        &mut self,
+        id: u32,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsError> {
+        let exporter = self
+            .exporter
+            .as_mut()
+            .ok_or_else(|| JsError::new("no export in progress"))?;
+        let (w, h) = (width as usize, height as usize);
+        if rgba.len() != w * h * 4 {
+            return Err(JsError::new("rgba buffer does not match dimensions"));
+        }
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        for px in rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&px[..3]);
+        }
+        exporter
+            .set_full_image(id, PixelImage::new(w, h, 3, rgb))
+            .map_err(|e| JsError::new(&e))
+    }
+
+    pub fn export_drop_image(&mut self, id: u32) {
+        if let Some(e) = self.exporter.as_mut() {
+            e.drop_full_image(id);
+        }
+    }
+
+    /// Composites one band (see the plan from `begin_export`).
+    pub fn export_band(&mut self, band: u32) -> Result<(), JsError> {
+        let exporter = self
+            .exporter
+            .as_mut()
+            .ok_or_else(|| JsError::new("no export in progress"))?;
+        exporter
+            .composite_band(band as usize)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Encodes and returns the finished panorama; ends the export session.
+    pub fn finish_export(&mut self, quality: u8) -> Result<ExportResult, JsError> {
+        let exporter = self
+            .exporter
+            .take()
+            .ok_or_else(|| JsError::new("no export in progress"))?;
+        let (jpeg, w, h) = exporter.finish(quality).map_err(|e| JsError::new(&e))?;
+        Ok(ExportResult {
+            width: w as u32,
+            height: h as u32,
+            jpeg,
+        })
+    }
+
+    pub fn cancel_export(&mut self) {
+        self.exporter = None;
     }
 
     /// Add a registration-scale image (RGBA8, e.g. canvas readback).
