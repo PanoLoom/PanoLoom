@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Viewer as PsvViewer } from "@photo-sphere-viewer/core";
 import "@photo-sphere-viewer/core/index.css";
 
@@ -6,6 +6,16 @@ export interface SphereCorrection {
   pan: number;
   tilt: number;
   roll: number;
+}
+
+/** The 360° viewer needs WebGL; without it we fall back to a flat view. */
+function webglAvailable(): boolean {
+  try {
+    const c = document.createElement("canvas");
+    return !!(c.getContext("webgl2") ?? c.getContext("webgl"));
+  } catch {
+    return false;
+  }
 }
 
 /** 360° preview: renders an equirect RGBA buffer via Photo Sphere Viewer. */
@@ -25,6 +35,7 @@ export function Viewer({
 }) {
   const el = useRef<HTMLDivElement>(null);
   const viewer = useRef<PsvViewer | null>(null);
+  const [flat] = useState(() => !webglAvailable());
 
   useEffect(() => {
     viewer.current?.setOption(
@@ -33,7 +44,25 @@ export function Viewer({
     );
   }, [correction]);
 
+  // No WebGL: draw the equirect flat (everything else — masks, adjust,
+  // export — still works; only the interactive sphere needs GL).
   useEffect(() => {
+    if (!flat || !el.current) return;
+    const host = el.current;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.cssText =
+      "max-width:100%;max-height:100%;margin:auto;position:absolute;inset:0;object-fit:contain;";
+    canvas
+      .getContext("2d")!
+      .putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+    host.appendChild(canvas);
+    return () => canvas.remove();
+  }, [flat, rgba, width, height]);
+
+  useEffect(() => {
+    if (flat) return;
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -84,7 +113,16 @@ export function Viewer({
       viewer.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rgba, width, height]);
+  }, [flat, rgba, width, height]);
 
-  return <div className="viewer" ref={el} />;
+  return (
+    <div className="viewer" ref={el}>
+      {flat && (
+        <div className="viewer-flat-note">
+          WebGL is unavailable — showing the panorama flat. Adjust, masks
+          and export still work.
+        </div>
+      )}
+    </div>
+  );
 }

@@ -424,6 +424,21 @@ button {
   background: var(--bg);
 }
 
+.viewer-flat-note {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  border: 1px solid var(--border);
+  padding: 5px 12px;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
 .shot {
   position: relative;
 }
