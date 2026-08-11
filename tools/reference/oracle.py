@@ -153,6 +153,11 @@ def match_all(features) -> list:
 
 
 def main() -> None:
+    # The port mirrors OpenCV's CPU paths; OpenCL kernels (UMat inputs can
+    # silently take them, e.g. in MultiBandBlender) have different f32
+    # semantics. Force CPU for reproducible parity dumps.
+    cv2.ocl.setUseOpenCL(False)
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--images", type=Path, required=True, help="directory of source images")
     ap.add_argument("--out", type=Path, default=None)

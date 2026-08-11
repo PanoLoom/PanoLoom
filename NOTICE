@@ -28,5 +28,7 @@ Affected areas include (list maintained as the port progresses):
     modules/stitching/src/exposure_compensate.cpp, modules/core/src/lu.impl
   - feather blending (blend.rs) — modules/stitching/src/blenders.cpp,
     modules/imgproc distanceTransform (DIST_L1)
-  - (pending) graph-cut seam finding     — modules/stitching/src/seam_finders.cpp
-  - (pending) multiband blending         — modules/stitching/src/blenders.cpp
+  - graph-cut seam finding (seam.rs) — modules/stitching/src/seam_finders.cpp,
+    opencv2/imgproc/detail/gcgraph.hpp
+  - multiband blending + pyramids (blend.rs) —
+    modules/stitching/src/blenders.cpp, modules/imgproc/src/pyramids.cpp
