@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- Social preview card. Rendered to og.png by tools/render-icons.sh. -->
+  <rect width="1200" height="630" fill="#131315"/>
+  <rect width="1200" height="4" y="626" fill="#e8a33d"/>
+  <g transform="translate(310 315) scale(0.62) translate(-256 -256)"
+     fill="none" stroke-linecap="round">
+    <circle cx="256" cy="256" r="148" stroke="#8e8e96" stroke-width="26"/>
+    <path d="M 28 296
+             C 118 296, 150 194, 256 194
+             C 362 194, 394 296, 484 296"
+          stroke="#e8a33d" stroke-width="30"/>
+    <path d="M 377.23 171.12
+             A 148 148 0 0 1 360.65 360.65"
+          stroke="#8e8e96" stroke-width="26"/>
+  </g>
+  <text x="520" y="300" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="92" font-weight="700" fill="#dcdcdf">Pano<tspan fill="#e8a33d">Loom</tspan></text>
+  <text x="522" y="368" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="34" fill="#8e8e96">Panorama stitching, entirely in your browser</text>
+</svg>

@@ -1,80 +1,70 @@
+<div align="center">
+
+<img src="packages/app/public/logo.svg" width="110" alt="PanoLoom logo">
+
 # PanoLoom
 
-**A modern, free, open-source panorama stitcher that runs entirely in your browser.**
+**Stitch panoramas — including full 360° photos — entirely in your browser.**
 
-**Live at [panoloom.pages.dev](https://panoloom.pages.dev)** — drop in overlapping photos
-(or click *try a sample set*), hit **Align & Preview**, spin the result in a 360° viewer,
-and export a full-resolution equirectangular JPEG that Google Photos and any panorama
-viewer recognizes as a 360° photo. No upload, no install, no server: everything runs on
-your machine via Rust compiled to WebAssembly, hosted as a static site.
+Free · open source · nothing is ever uploaded
 
-## What it does today (v1)
+**[Open PanoLoom →](https://panoloom.pages.dev)**
 
-- **360°×180° spherical panoramas** from JPEG/PNG shots (handheld, pano head, drone).
-- **Auto alignment**: ORB features → pairwise matching → bundle adjustment → wave
-  correction, the same pipeline design as OpenCV's stitcher — ported, not wrapped.
-- **Pose-prior rescue**: featureless shots (blank sky) that carry rig metadata (DJI
-  gimbal XMP) are placed from their recorded pose instead of being dropped.
-- **Production compositing**: photometric gain compensation, graph-cut seams, multiband
-  blending — with the panorama treated as a true cylinder, so seams cross the ±180°
-  wrap invisibly.
-- **Orientation editing**: recenter and level the finished panorama (numeric
-  yaw/pitch/roll or "center on current view") with an instant live preview; Apply bakes
-  the rotation into the cameras so the export matches exactly.
-- **Control points & lens optimization**: a PTGui-style point editor (auto points from
-  feature matches, add/delete by clicking, error-sorted list) drives a
-  Levenberg–Marquardt optimizer over rotations, field of view, and a PanoTools radial
-  lens model (a·b·c, optional center shift) — recovers synthetic ground truth to
-  machine precision. All warping is distortion-aware once a lens is fitted.
-- **Seam masks**: paint *avoid* over moving clouds, people, or ghosts so seams route
-  around them, or *prefer* to force a shot to win a region — the same brush workflow
-  as PTGui's masking, honored by both the preview and the full-res export.
-- **Full-resolution export**: composed in memory-bounded horizontal bands (a 17,000 px
-  DJI panorama fits comfortably in wasm's address space), JPEG-encoded in wasm, stamped
-  with GPano XMP (Photo Sphere) metadata. Partial panoramas export cropped to their
-  actual coverage — the GPano croppedArea fields place the crop on the full sphere, so
-  a single-row panorama isn't padded with baked-in black.
-- **Projects**: save the alignment as a `.panoproj` file; reopening skips registration
-  entirely (the alignment restores bit-for-bit).
-- **Threads when available**: on cross-origin-isolated browsers the engine runs on a
-  rayon pool over Web Workers (the status bar shows the pool size); otherwise it falls
-  back to a single-threaded build automatically.
+<img src="docs/images/hero.jpg" width="820" alt="A stitched panorama in PanoLoom's 360° viewer">
 
-- **Installable & offline**: the app is a PWA — after the first visit it loads and
-  stitches with no connection at all (nothing ever leaves your machine anyway).
-- **Session restore**: everything autosaves locally (photos, alignment, points, masks,
-  name) — close the tab mid-project and the next visit offers to pick up where you left
-  off, no re-align needed.
+</div>
 
-Typical numbers (M2 MacBook, Chrome, 10-thread pool): an 8-shot ring stitches in ~1.4 s;
-a real 33-shot 12.6 MP DJI sphere aligns + previews in ~56 s and exports its 147 MP
-JPEG in ~3.3 min.
+---
 
-## Why
+## Stitch a panorama in three steps
 
-The industry standard, PTGui, is excellent but expensive and desktop-bound, and every
-serious competitor (Microsoft ICE, Autopano Giga) has been discontinued. No browser tool
-offers the "pro layer": control points, lens models, projection choice, seam control,
-photometric optimization, 360° metadata. PanoLoom aims to fill that gap.
+1. **Drop your photos** — overlapping JPEGs from any camera, drone, or phone (or click *try a sample set*).
+2. **Align & Preview** — automatic feature matching, bundle adjustment and blending; spin the result in the 360° viewer.
+3. **Export JPEG** — a full-resolution panorama with Photo Sphere (GPano) metadata that Google Photos, Facebook and any 360° viewer recognize.
+
+<img src="docs/images/pano-result.jpg" width="820" alt="Exported 360-degree panorama from a 33-shot drone set">
+
+*A 33-shot DJI drone sphere exported at 17,172 × 8,339 px (147 MP) — stitched start to finish in a browser tab.*
+
+## The pro layer
+
+PanoLoom is built to replace desktop tools like PTGui for everyday spherical work, so the controls that matter are all there:
+
+| | |
+|---|---|
+| <img src="docs/images/adjust.jpg" width="400" alt="Orientation adjust panel"> | **Recenter & level** — numeric yaw/pitch/roll or *center on current view*, previewed live and baked into the cameras so exports match exactly. |
+| <img src="docs/images/points.jpg" width="400" alt="Control point editor"> | **Control points & lens optimization** — auto points from feature matches, click to add your own, then optimize rotations, field of view and a PanoTools-style radial lens model (a·b·c). Recovers synthetic ground truth to machine precision. |
+| <img src="docs/images/mask.jpg" width="400" alt="Seam mask editor"> | **Seam masks** — paint *avoid* over moving clouds, people or ghosts so seams route around them; paint *prefer* to force a shot to win. Honored by the preview and the full-res export. |
+| <img src="docs/images/restore.png" width="400" alt="Session restore banner"> | **Projects & sessions** — save `.panoproj` files that restore the exact alignment without re-registering, and everything autosaves locally: close the tab and pick up where you left off. |
+
+Also in the box: pose-metadata rescue for featureless sky shots (DJI gimbal XMP), coverage-cropped exports (no baked-in black on partial panoramas), an installable PWA that works fully offline, and a flat-preview fallback when WebGL isn't available.
+
+## Benchmarks
+
+The engine is a stage-by-stage Rust port of OpenCV's `stitching::detail`, validated for parity against it (many stages bit-exact — see [How it's built](#how-its-built-the-oracle-method)). That makes an apples-to-apples comparison possible: same algorithms, same test sets, OpenCV running natively with its own threading vs the PanoLoom engine.
+
+| Test set | OpenCV 4.14 (native) | PanoLoom engine (native) | PanoLoom in the browser |
+|---|---|---|---|
+| Ring — 8 shots | 0.9 s | **0.4 s** | 1.4 s preview · ~8 s incl. export |
+| Sphere — 26 shots | 39.7 s | **26.1 s** | — |
+| DJI drone sphere — 33 × 12.6 MP | 50.4 s | **32.0 s** | 55.6 s preview · 4.2 min incl. 147 MP export |
+
+> **And the browser tab is more robust than the desktop pipeline:** the DJI set has 8
+> near-featureless sky shots. OpenCV warns `only 25/33 images connected` and leaves a
+> gaping sky; PanoLoom reads the gimbal pose from each file's metadata and places all
+> **33/33**.
+
+Full methodology, hardware and caveats in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## How it's built: the oracle method
 
-The engine is a stage-by-stage **port of OpenCV's `stitching::detail`** (Apache-2.0, see
-`NOTICE`) to pure Rust — and every stage is gated on parity with the original:
+The engine (`crates/panoloom-core`, pure Rust, compiled to WebAssembly with SIMD and a rayon thread pool) is a port of OpenCV's stitching pipeline (Apache-2.0, see `NOTICE`) — and every stage is gated on parity with the original:
 
-- `tools/reference` runs the genuine OpenCV pipeline (pinned, OpenCL off) over test sets
-  and dumps every intermediate: keypoints, descriptors, matches, cameras before/after
-  bundle adjustment, gains, seam masks, warped images, blended output.
-- Rust tests replay the same inputs and compare per stage. Many stages are bit-exact
-  (gains, graph-cut seams, multiband pyramids); the rest are within documented tolerances
-  (libm trig differs by ≤2 ulp across platforms; LAPACK-backed solves differ in the last
-  float digits).
-- Deliberate deviations from OpenCV (there are a few, e.g. re-validating RANSAC inlier
-  masks against the final homography, wrap-aware seam finding, pose-prior rescue) are
-  documented at the call site and covered by their own tests.
+- `tools/reference` runs the genuine OpenCV pipeline (pinned, OpenCL off) over test sets and dumps every intermediate: keypoints, descriptors, matches, cameras before/after bundle adjustment, gains, seam masks, warped images, blended output.
+- Rust tests replay the same inputs and compare per stage. Many stages are bit-exact (gains, graph-cut seams, multiband pyramids); the rest are within documented tolerances.
+- Deliberate deviations (RANSAC inlier re-validation, wrap-aware seam finding, pose-prior rescue, the lens model and CP optimizer — which OpenCV's stitching has no equivalent of) are documented at the call site and covered by their own tests, including a synthetic ground-truth recovery test for the optimizer.
 
-This is why a from-scratch Rust engine can make production-quality panoramas: quality is
-measured against the reference at every step, not eyeballed.
+This is why a from-scratch Rust engine can make production-quality panoramas: quality is measured against the reference at every step, not eyeballed. The full pipeline study lives in [docs/pipeline.md](docs/pipeline.md).
 
 ## Repository layout
 
@@ -86,7 +76,7 @@ packages/metadata       GPano XMP injection (TS)
 packages/app            the web app (React + Vite)
 tools/reference         OpenCV oracle harness (Python)
 tools/testdata          synthetic ground-truth dataset generator (Python)
-docs/                   engineering docs (pipeline study)
+docs/                   pipeline study, benchmarks, README images
 ```
 
 ## Development
@@ -112,7 +102,9 @@ node packages/app/e2e/m8-project.mjs    # project save/load round-trip
 node packages/app/e2e/m8-sample.mjs     # bundled sample set
 node packages/app/e2e/m9-cp-editor.mjs  # control points + lens optimize
 node packages/app/e2e/m10-mask.mjs      # seam masks move the seam
+node packages/app/e2e/m11-restore.mjs   # session autosave -> restore
 # any of the above also run cross-engine: BROWSER=webkit|firefox node ...
+node packages/app/e2e/screenshots.mjs   # regenerate the README screenshots
 ```
 
 Stage-level profiling of the engine on a directory of registration-scale PNGs:
@@ -120,6 +112,8 @@ Stage-level profiling of the engine on a directory of registration-scale PNGs:
 ```sh
 PANOLOOM_TIMING=1 cargo run --release --example profile_align -- <dir> [priors.json]
 ```
+
+Icons are generated from the SVG sources with `tools/render-icons.sh` (needs librsvg).
 
 ## Roadmap
 

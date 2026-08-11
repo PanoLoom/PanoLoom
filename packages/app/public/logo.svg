@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- PanoLoom mark: a panorama ring with the loom thread woven through
+       it — over the ring on the left, under it on the right. -->
+  <g fill="none" stroke-linecap="round">
+    <!-- ring -->
+    <circle cx="256" cy="256" r="148" stroke="#8e8e96" stroke-width="26"/>
+    <!-- thread: one smooth arch through the ring -->
+    <path d="M 28 296
+             C 118 296, 150 194, 256 194
+             C 362 194, 394 296, 484 296"
+          stroke="#e8a33d" stroke-width="30"/>
+    <!-- right ring arc redrawn OVER the thread (the under-pass) -->
+    <path d="M 377.23 171.12
+             A 148 148 0 0 1 360.65 360.65"
+          stroke="#8e8e96" stroke-width="26"/>
+  </g>
+</svg>

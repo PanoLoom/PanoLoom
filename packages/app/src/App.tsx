@@ -747,6 +747,27 @@ export function App() {
   return (
     <div className="frame">
       <header className="bar">
+        <svg
+          className="mark"
+          viewBox="0 0 512 512"
+          width="24"
+          height="24"
+          aria-hidden="true"
+        >
+          <g fill="none" strokeLinecap="round">
+            <circle cx="256" cy="256" r="140" stroke="#8e8e96" strokeWidth="42" />
+            <path
+              d="M 36 296 C 122 296, 154 198, 256 198 C 358 198, 390 296, 476 296"
+              stroke="#e8a33d"
+              strokeWidth="48"
+            />
+            <path
+              d="M 370.68 141.11 A 140 140 0 0 1 354.99 354.99"
+              stroke="#8e8e96"
+              strokeWidth="42"
+            />
+          </g>
+        </svg>
         <span className="wordmark">
           Pano<em>Loom</em>
         </span>

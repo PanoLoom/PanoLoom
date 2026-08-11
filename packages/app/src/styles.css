@@ -76,6 +76,11 @@ button {
   position: relative;
 }
 
+.bar .mark {
+  flex: 0 0 auto;
+  margin-right: -10px;
+}
+
 .wordmark {
   font-weight: 640;
   font-size: 17px;

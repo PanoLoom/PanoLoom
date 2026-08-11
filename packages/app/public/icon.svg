@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- PWA icon: the mark on the app tile, sized for maskable safety. -->
+  <rect width="512" height="512" fill="#1a1a1d"/>
+  <g transform="translate(256 256) scale(0.72) translate(-256 -256)"
+     fill="none" stroke-linecap="round">
+    <circle cx="256" cy="256" r="148" stroke="#8e8e96" stroke-width="28"/>
+    <path d="M 28 296
+             C 118 296, 150 194, 256 194
+             C 362 194, 394 296, 484 296"
+          stroke="#e8a33d" stroke-width="34"/>
+    <path d="M 377.23 171.12
+             A 148 148 0 0 1 360.65 360.65"
+          stroke="#8e8e96" stroke-width="28"/>
+  </g>
+</svg>
