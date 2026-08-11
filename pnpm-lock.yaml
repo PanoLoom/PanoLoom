@@ -14,12 +14,24 @@ importers:
 
   packages/app:
     dependencies:
+      '@fontsource-variable/archivo':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/martian-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@panoloom/metadata':
         specifier: workspace:*
         version: link:../metadata
       '@panoloom/shared':
         specifier: workspace:*
         version: link:../shared
+      '@photo-sphere-viewer/core':
+        specifier: ^5.15.1
+        version: 5.15.1
+      exifreader:
+        specifier: ^4.42.0
+        version: 4.42.0
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -296,6 +308,12 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource-variable/archivo@5.3.0':
+    resolution: {integrity: sha512-HogK8FJelrD1o7TlZlkIVtHgc20bO5PZRWE7mUeUTdMN055alznQV6/00J00IBeu8FQAH4s3zW9UJNvKExXf+g==}
+
+  '@fontsource/martian-mono@5.3.0':
+    resolution: {integrity: sha512-0iTnU6SZi6j5z4ymwlZGep6akvp/xWm+r+WyZO9hMfDJWX+dsFLipQp9zO02S0lkUQ+zAahcZNy3XLiNP+gVqQ==}
+
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
 
@@ -317,6 +335,9 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+
+  '@photo-sphere-viewer/core@5.15.1':
+    resolution: {integrity: sha512-nhJviczUB1xiAT/I7mGba9iDIw7DvsiK34hbR9t7kIrg9MySG33uA+a4QUk2dEOP5PjcKMj58wod8I/dQ7ePiw==}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -475,6 +496,10 @@ packages:
     peerDependencies:
       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0
 
+  '@xmldom/xmldom@0.9.10':
+    resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
+    engines: {node: '>=14.6'}
+
   baseline-browser-mapping@2.11.13:
     resolution: {integrity: sha512-k9HNuUVMlqVjQ9UHzfPjIqiDbWw7WqT1AoT7GL8VwvF3r0ZfArtgiSPAlmupyNquNgOJHTuH4CKYf8ttMTWBTQ==}
     engines: {node: '>=6.0.0'}
@@ -514,6 +539,10 @@ packages:
   escalade@3.2.0:
     resolution: {integrity: sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==}
     engines: {node: '>=6'}
+
+  exifreader@4.42.0:
+    resolution: {integrity: sha512-dvjmG8KvSoMvFCG7XaH+kRgBXUTZxWibdm6ThyjcZbA18pAALPRaLcletWg8wAeYo1E1j46q5cuTsLQJipOqsA==}
+    hasBin: true
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -615,6 +644,9 @@ packages:
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
+
+  three@0.185.1:
+    resolution: {integrity: sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==}
 
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
@@ -866,6 +898,10 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
+  '@fontsource-variable/archivo@5.3.0': {}
+
+  '@fontsource/martian-mono@5.3.0': {}
+
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
@@ -887,6 +923,10 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@photo-sphere-viewer/core@5.15.1':
+    dependencies:
+      three: 0.185.1
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 
@@ -1008,6 +1048,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@xmldom/xmldom@0.9.10':
+    optional: true
+
   baseline-browser-mapping@2.11.13: {}
 
   browserslist@4.28.8:
@@ -1060,6 +1103,10 @@ snapshots:
       '@esbuild/win32-x64': 0.25.12
 
   escalade@3.2.0: {}
+
+  exifreader@4.42.0:
+    optionalDependencies:
+      '@xmldom/xmldom': 0.9.10
 
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
@@ -1153,6 +1200,8 @@ snapshots:
   semver@6.3.1: {}
 
   source-map-js@1.2.1: {}
+
+  three@0.185.1: {}
 
   tinyglobby@0.2.17:
     dependencies:

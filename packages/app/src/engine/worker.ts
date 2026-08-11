@@ -1,35 +1,70 @@
 /// <reference lib="webworker" />
 /**
- * Engine worker. Loads the wasm module (built by `pnpm build:wasm` into
- * ./pkg) and answers the M0 smoke test: version + a pixel round trip.
+ * Engine worker: owns the wasm Engine instance. Pixels arrive/leave as
+ * transferable ArrayBuffers; one in-flight request at a time per op.
  */
-import init, { engine_version, smoke_grayscale } from "./pkg/panoloom.js";
+import init, { Engine, engine_version } from "./pkg/panoloom.js";
 import wasmUrl from "./pkg/panoloom_bg.wasm?url";
-import type { EngineSmokeReport } from "./client";
+import type { WorkerRequest, WorkerResponse } from "./protocol";
 
-// wasm SIMD feature probe (validates a tiny module using v128 ops).
-const SIMD_PROBE = new Uint8Array([
-  0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1,
-  8, 0, 65, 0, 253, 15, 253, 98, 11,
-]);
+let engine: Engine | null = null;
 
-self.onmessage = async () => {
-  const report: EngineSmokeReport = {
-    engineVersion: "unknown",
-    grayscaleOk: false,
-    crossOriginIsolated: self.crossOriginIsolated === true,
-    simdSupported: WebAssembly.validate(SIMD_PROBE),
-    threadsAvailable:
-      self.crossOriginIsolated === true && typeof SharedArrayBuffer !== "undefined",
-  };
+function post(msg: WorkerResponse, transfer: Transferable[] = []) {
+  (self as unknown as Worker).postMessage(msg, transfer);
+}
+
+self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
+  const msg = e.data;
   try {
-    await init({ module_or_path: wasmUrl });
-    report.engineVersion = engine_version();
-    // 2x1 image: pure red, pure green — expect OpenCV luma 76, 150.
-    const gray = smoke_grayscale(2, 1, new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]));
-    report.grayscaleOk = gray.length === 2 && gray[0] === 76 && gray[1] === 150;
+    switch (msg.type) {
+      case "init": {
+        await init({ module_or_path: wasmUrl });
+        engine = new Engine();
+        post({ type: "ready", version: engine_version() });
+        break;
+      }
+      case "addImage": {
+        engine!.add_image(
+          msg.id,
+          new Uint8Array(msg.rgba),
+          msg.width,
+          msg.height,
+        );
+        post({ type: "imageAdded", id: msg.id });
+        break;
+      }
+      case "removeImage": {
+        engine!.remove_image(msg.id);
+        post({ type: "imageRemoved", id: msg.id });
+        break;
+      }
+      case "align": {
+        const result = JSON.parse(engine!.align());
+        post({ type: "aligned", result });
+        break;
+      }
+      case "preview": {
+        const p = engine!.render_preview(msg.maxWidth);
+        const rgba = p.take_rgba();
+        const buf = rgba.buffer as ArrayBuffer;
+        post(
+          {
+            type: "previewReady",
+            rgba: buf,
+            width: p.width,
+            height: p.height,
+          },
+          [buf],
+        );
+        p.free();
+        break;
+      }
+    }
   } catch (err) {
-    report.error = err instanceof Error ? err.message : String(err);
+    post({
+      type: "error",
+      op: msg.type,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
-  self.postMessage(report);
 };

@@ -23,6 +23,7 @@ pub mod imgproc;
 pub mod matcher;
 pub mod orb;
 pub mod orb_pattern;
+pub mod pipeline;
 pub mod project;
 pub mod rng;
 pub mod seam;

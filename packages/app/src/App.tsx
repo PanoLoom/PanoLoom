@@ -1,75 +1,195 @@
-import { useEffect, useState } from "react";
-import { runEngineSmokeTest, type EngineSmokeReport } from "./engine/client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import "@fontsource-variable/archivo";
+import "@fontsource/martian-mono/400.css";
+import { EngineClient } from "./engine/client";
+import { decodeFile, workScaleFor, type DecodedImage } from "./lib/decode";
+import { Viewer } from "./components/Viewer";
 
-function Check({ ok, label, detail }: { ok: boolean; label: string; detail?: string }) {
-  return (
-    <li style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "6px 0" }}>
-      <span style={{ color: ok ? "var(--ok)" : "var(--bad)", fontWeight: 600 }}>
-        {ok ? "✓" : "✗"}
-      </span>
-      <span>{label}</span>
-      {detail && <span style={{ color: "var(--text-dim)", fontSize: 13 }}>{detail}</span>}
-    </li>
-  );
-}
+type Shot = Omit<DecodedImage, "rgba"> & { dropped: boolean };
+
+type Phase =
+  | { kind: "empty" }
+  | { kind: "loaded" }
+  | { kind: "aligning"; startedAt: number }
+  | { kind: "previewing" }
+  | { kind: "preview"; rgba: ArrayBuffer; width: number; height: number };
 
 export function App() {
-  const [report, setReport] = useState<EngineSmokeReport | null>(null);
+  const engine = useRef<EngineClient | null>(null);
+  const workScale = useRef<number | null>(null);
+  const [ready, setReady] = useState(false);
+  const [shots, setShots] = useState<Shot[]>([]);
+  const [phase, setPhase] = useState<Phase>({ kind: "empty" });
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    runEngineSmokeTest().then(setReport, (e: Error) => setError(e.message));
+    const c = new EngineClient();
+    engine.current = c;
+    c.init().then(() => setReady(true), (e: Error) => setError(e.message));
+    return () => c.dispose();
   }, []);
 
+  useEffect(() => {
+    if (phase.kind !== "aligning") return;
+    const t = setInterval(
+      () => setElapsed((Date.now() - phase.startedAt) / 1000),
+      100,
+    );
+    return () => clearInterval(t);
+  }, [phase]);
+
+  const importFiles = useCallback(
+    async (files: FileList | File[]) => {
+      setError(null);
+      const list = [...files].filter((f) => /image\/(jpeg|png)/.test(f.type));
+      if (list.length === 0) return;
+      for (const file of list) {
+        try {
+          const img = await decodeFile(file, workScale.current);
+          workScale.current ??= workScaleFor(img.fullWidth, img.fullHeight);
+          await engine.current!.addImage(
+            img.id,
+            img.rgba,
+            img.width,
+            img.height,
+          );
+          const { rgba: _discarded, ...meta } = img;
+          setShots((s) => [...s, { ...meta, dropped: false }]);
+          setPhase((p) => (p.kind === "empty" ? { kind: "loaded" } : p));
+        } catch (e) {
+          setError(`${file.name}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    },
+    [],
+  );
+
+  const runAlign = useCallback(async () => {
+    setError(null);
+    setElapsed(0);
+    setPhase({ kind: "aligning", startedAt: Date.now() });
+    try {
+      const result = await engine.current!.align();
+      setShots((s) =>
+        s.map((shot) => ({
+          ...shot,
+          dropped: result.dropped.includes(shot.id),
+        })),
+      );
+      setPhase({ kind: "previewing" });
+      const p = await engine.current!.renderPreview(2048);
+      setPhase({ kind: "preview", ...p });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPhase(shots.length > 0 ? { kind: "loaded" } : { kind: "empty" });
+    }
+  }, [shots.length]);
+
+  const busy = phase.kind === "aligning" || phase.kind === "previewing";
+  const canAlign = ready && shots.length >= 2 && !busy;
+
   return (
-    <main
-      style={{
-        minHeight: "100dvh",
-        display: "grid",
-        placeItems: "center",
-        padding: 24,
-      }}
-    >
-      <section
-        style={{
-          background: "var(--panel)",
-          border: "1px solid var(--border)",
-          borderRadius: 12,
-          padding: "28px 32px",
-          maxWidth: 460,
-          width: "100%",
+    <div className="frame">
+      <header className="bar">
+        <span className="wordmark">
+          Pano<em>Loom</em>
+        </span>
+        <span className="bar-status">
+          {ready ? `engine ready` : `loading engine…`}
+          {shots.length > 0 && ` · ${shots.length} shots`}
+          {busy && ` · ${elapsed.toFixed(1)}s`}
+        </span>
+        <span className="bar-spacer" />
+        <button className="align-btn" disabled={!canAlign} onClick={runAlign}>
+          Align &amp; Preview
+        </button>
+        <div className={`thread${busy ? " busy" : ""}`} />
+      </header>
+
+      <aside className="rail">
+        {shots.length === 0 ? (
+          <div className="rail-empty">
+            the filmstrip
+            <br />
+            waits for shots
+          </div>
+        ) : (
+          shots.map((s, i) => (
+            <div
+              key={s.id}
+              className={`shot${s.dropped ? " dropped" : ""}`}
+              style={{ animationDelay: `${Math.min(i * 40, 400)}ms` }}
+              title={s.dropped ? "could not be matched" : s.fileName}
+            >
+              <img src={s.thumbnailUrl} alt={s.fileName} />
+              <div className="shot-meta">
+                <div className="shot-name">{s.fileName}</div>
+                <div className="shot-info">
+                  {s.fullWidth}×{s.fullHeight}
+                  {s.focalLength35mm ? ` · ${s.focalLength35mm}mm` : ""}
+                  {s.dropped ? " · unmatched" : ""}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </aside>
+
+      <main
+        className="stage"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          void importFiles(e.dataTransfer.files);
         }}
       >
-        <h1 style={{ margin: 0, fontSize: 22, letterSpacing: 0.3 }}>
-          Pano<span style={{ color: "var(--accent)" }}>Loom</span>
-        </h1>
-        <p style={{ color: "var(--text-dim)", marginTop: 6, fontSize: 14 }}>
-          M0 toolchain check — the stitcher itself is on its way.
-        </p>
-        {error && <p style={{ color: "var(--bad)" }}>Worker failed: {error}</p>}
-        {report ? (
-          <ul style={{ listStyle: "none", padding: 0, margin: "16px 0 0" }}>
-            <Check
-              ok={report.engineVersion !== "unknown"}
-              label="Rust engine loaded"
-              detail={`v${report.engineVersion}`}
-            />
-            <Check ok={report.grayscaleOk} label="Pixel round trip (JS ↔ wasm)" />
-            <Check ok={report.simdSupported} label="wasm SIMD" />
-            <Check
-              ok={report.crossOriginIsolated}
-              label="Cross-origin isolated (COOP/COEP)"
-            />
-            <Check
-              ok={report.threadsAvailable}
-              label="Threads available (SharedArrayBuffer)"
-            />
-            {report.error && <p style={{ color: "var(--bad)" }}>{report.error}</p>}
-          </ul>
+        {phase.kind === "preview" ? (
+          <Viewer rgba={phase.rgba} width={phase.width} height={phase.height} />
         ) : (
-          !error && <p style={{ color: "var(--text-dim)" }}>Running smoke test…</p>
+          <label className={`dropzone${dragOver ? " over" : ""}`}>
+            <h2>
+              {shots.length === 0
+                ? "Drop your shots here"
+                : `${shots.length} shots on the loom`}
+            </h2>
+            <p>
+              JPEG or PNG · overlapping frames ·{" "}
+              <span className="browse">browse files</span>
+            </p>
+            <p className="hint">
+              everything runs in your browser — nothing is uploaded
+            </p>
+            <input
+              type="file"
+              accept="image/jpeg,image/png"
+              multiple
+              onChange={(e) => {
+                if (e.target.files) void importFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </label>
         )}
-      </section>
-    </main>
+
+        {busy && (
+          <div className="working">
+            <div className="step">
+              {phase.kind === "aligning"
+                ? "weaving · features → matches → bundle adjustment"
+                : "rendering preview"}
+            </div>
+          </div>
+        )}
+
+        {error && <div className="error-note">{error}</div>}
+      </main>
+    </div>
   );
 }

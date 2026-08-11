@@ -1,30 +1,89 @@
 /**
- * Main-thread client for the engine worker. For M0 this is a single
- * smoke-test round trip; the real typed API (Comlink) lands with M3+.
+ * Typed async facade over the engine worker. One worker per project;
+ * requests are serialized (the engine is single-threaded anyway).
  */
+import type { AlignResult, WorkerRequest, WorkerResponse } from "./protocol";
 
-export interface EngineSmokeReport {
-  engineVersion: string;
-  grayscaleOk: boolean;
-  crossOriginIsolated: boolean;
-  simdSupported: boolean;
-  threadsAvailable: boolean;
-  error?: string;
-}
+type Pending = {
+  resolve: (msg: WorkerResponse) => void;
+  reject: (err: Error) => void;
+};
 
-export function runEngineSmokeTest(): Promise<EngineSmokeReport> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./worker.ts", import.meta.url), {
+export class EngineClient {
+  private worker: Worker;
+  private queue: Promise<unknown> = Promise.resolve();
+  private pending: Pending | null = null;
+  version = "";
+
+  constructor() {
+    this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
     });
-    worker.onmessage = (e: MessageEvent<EngineSmokeReport>) => {
-      resolve(e.data);
-      worker.terminate();
+    this.worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+      const p = this.pending;
+      this.pending = null;
+      if (!p) return;
+      if (e.data.type === "error") {
+        p.reject(new Error(e.data.message));
+      } else {
+        p.resolve(e.data);
+      }
     };
-    worker.onerror = (e) => {
-      reject(new Error(e.message));
-      worker.terminate();
+    this.worker.onerror = (e) => {
+      this.pending?.reject(new Error(e.message));
+      this.pending = null;
     };
-    worker.postMessage("smoke");
-  });
+  }
+
+  private send(
+    msg: WorkerRequest,
+    transfer: Transferable[] = [],
+  ): Promise<WorkerResponse> {
+    const run = () =>
+      new Promise<WorkerResponse>((resolve, reject) => {
+        this.pending = { resolve, reject };
+        this.worker.postMessage(msg, transfer);
+      });
+    const next = this.queue.then(run, run);
+    this.queue = next.catch(() => {});
+    return next;
+  }
+
+  async init(): Promise<string> {
+    const r = await this.send({ type: "init" });
+    if (r.type !== "ready") throw new Error("unexpected response");
+    this.version = r.version;
+    return r.version;
+  }
+
+  async addImage(
+    id: number,
+    rgba: ArrayBuffer,
+    width: number,
+    height: number,
+  ): Promise<void> {
+    await this.send({ type: "addImage", id, rgba, width, height }, [rgba]);
+  }
+
+  async removeImage(id: number): Promise<void> {
+    await this.send({ type: "removeImage", id });
+  }
+
+  async align(): Promise<AlignResult> {
+    const r = await this.send({ type: "align" });
+    if (r.type !== "aligned") throw new Error("unexpected response");
+    return r.result;
+  }
+
+  async renderPreview(
+    maxWidth: number,
+  ): Promise<{ rgba: ArrayBuffer; width: number; height: number }> {
+    const r = await this.send({ type: "preview", maxWidth });
+    if (r.type !== "previewReady") throw new Error("unexpected response");
+    return { rgba: r.rgba, width: r.width, height: r.height };
+  }
+
+  dispose() {
+    this.worker.terminate();
+  }
 }

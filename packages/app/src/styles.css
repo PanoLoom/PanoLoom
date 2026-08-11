@@ -1,23 +1,332 @@
-/* Placeholder shell styles — the real design system lands with the app UI (M5). */
+/* PanoLoom design tokens — dark pro-studio.
+   Neutral grays (photos must read true), one warm accent: the loom thread. */
+
 :root {
   color-scheme: dark;
-  --bg: #161618;
-  --panel: #1f1f22;
-  --border: #2c2c30;
-  --text: #d8d8dc;
-  --text-dim: #8b8b92;
-  --accent: #e8a33d;
-  --ok: #5fb26a;
+
+  --bg: #131315;
+  --bg-raised: #1a1a1d;
+  --panel: #1f1f23;
+  --panel-hover: #26262b;
+  --border: #2d2d33;
+  --border-strong: #3a3a42;
+
+  --text: #dcdcdf;
+  --text-dim: #8e8e96;
+  --text-faint: #5c5c64;
+
+  --thread: #e8a33d; /* the loom thread */
+  --thread-dim: #a97525;
+  --ok: #6cb875;
   --bad: #d4605f;
+
+  --font-ui: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, monospace;
+
+  --rail-w: 232px;
+  --bar-h: 52px;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* ---------- app frame ---------- */
+
+.frame {
+  display: grid;
+  grid-template-rows: var(--bar-h) 1fr;
+  grid-template-columns: var(--rail-w) 1fr;
+  grid-template-areas:
+    "bar bar"
+    "rail stage";
+  height: 100%;
+}
+
+/* ---------- top bar ---------- */
+
+.bar {
+  grid-area: bar;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 20px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+
+.wordmark {
+  font-weight: 640;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+
+.wordmark em {
+  font-style: normal;
+  color: var(--thread);
+}
+
+.bar-status {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.bar-spacer {
+  flex: 1;
+}
+
+/* The thread: a 2px line along the bottom of the bar that weaves during
+   long operations and rests as a subtle underline otherwise. */
+.thread {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--thread-dim) 30%, var(--thread) 50%, var(--thread-dim) 70%, transparent);
+  background-size: 220px 100%;
+  background-repeat: no-repeat;
+  background-position: -220px 0;
+  opacity: 0;
+  transition: opacity 240ms ease;
+}
+
+.thread.busy {
+  opacity: 1;
+  animation: weave 1.4s linear infinite;
+}
+
+@keyframes weave {
+  from {
+    background-position: -220px 0;
+  }
+  to {
+    background-position: calc(100% + 220px) 0;
+  }
+}
+
+.align-btn {
+  appearance: none;
+  border: 1px solid var(--thread-dim);
+  background: color-mix(in srgb, var(--thread) 12%, transparent);
+  color: var(--thread);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  padding: 7px 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 160ms ease, transform 80ms ease;
+}
+
+.align-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--thread) 22%, transparent);
+}
+
+.align-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.align-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ---------- filmstrip rail ---------- */
+
+.rail {
+  grid-area: rail;
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rail-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: center;
+  margin-top: 32px;
+  line-height: 1.6;
+}
+
+.shot {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  animation: shot-in 320ms ease backwards;
+}
+
+.shot.dropped {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+@keyframes shot-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+}
+
+.shot img {
+  width: 64px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+  background: #000;
+}
+
+.shot-meta {
+  min-width: 0;
+}
+
+.shot-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shot-info {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+
+/* ---------- stage ---------- */
+
+.stage {
+  grid-area: stage;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 600px at 30% -10%, #1a1a1e 0%, transparent 60%),
+    var(--bg);
+}
+
+.dropzone {
+  position: absolute;
+  inset: 24px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-dim);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.dropzone.over {
+  border-color: var(--thread);
+  background: color-mix(in srgb, var(--thread) 5%, transparent);
+}
+
+.dropzone h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 560;
+  color: var(--text);
+}
+
+.dropzone p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.dropzone .hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 14px;
+}
+
+.dropzone input {
+  display: none;
+}
+
+.browse {
+  color: var(--thread);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* status overlay during align */
+.working {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.working .step {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.error-note {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--bad) 16%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border));
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  max-width: 70%;
+}
+
+.viewer {
+  position: absolute;
+  inset: 0;
+}
+
+.viewer .psv-container {
+  background: var(--bg);
 }
