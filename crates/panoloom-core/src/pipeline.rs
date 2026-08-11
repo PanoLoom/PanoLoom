@@ -397,12 +397,21 @@ pub fn render_preview(
     // SEAM scale (cheap), composite at REGISTRATION scale (sharp), capped
     // so the full 360° canvas stays <= max_width.
     let full_width_at = |s: f64| (2.0 * std::f64::consts::PI * s).ceil() as usize;
-    let seam_scale = alignment.warped_image_scale * SEAM_FROM_WORK_SCALE;
     let compose_scale = if full_width_at(alignment.warped_image_scale) > max_width {
         max_width as f64 / (2.0 * std::f64::consts::PI)
     } else {
         alignment.warped_image_scale
     };
+    // Snap both scales so one full 360° period is an EXACT (even) integer
+    // number of pixels: wrap folding and the 2:1 canvas are then exact,
+    // eliminating sub-pixel shear at the meridian (visible as specks on
+    // high-contrast silhouettes crossing the wrap).
+    let snap = |s: f64| -> f64 {
+        let w = ((2.0 * std::f64::consts::PI * s).floor() as usize) & !1;
+        w as f64 / (2.0 * std::f64::consts::PI)
+    };
+    let compose_scale = snap(compose_scale);
+    let seam_scale = snap(compose_scale * SEAM_FROM_WORK_SCALE);
 
     let k_for = |c: &CameraParams, m: f64| -> [[f32; 3]; 3] {
         [
@@ -595,8 +604,10 @@ pub fn render_preview(
     // Canvas width uses FLOOR: a full-360 ROI spans 2*trunc(pi*s)+1 >=
     // floor(2*pi*s) columns, so every canvas column is covered (extras
     // wrap-fold); ceil left a one-pixel black hairline at the wrap seam.
-    let canvas_w = (2.0 * std::f64::consts::PI * scale).floor() as usize;
-    let canvas_h = (std::f64::consts::PI * scale).ceil() as usize;
+    // EXACTLY 2:1 — 360° viewers pad non-2:1 equirects onto a 2:1 canvas
+    // with black bars, which materialize as a hairline at the wrap.
+    let canvas_w = ((2.0 * std::f64::consts::PI * scale).floor() as usize) & !1;
+    let canvas_h = canvas_w / 2;
     let mut rgba = vec![0u8; canvas_w * canvas_h * 4];
     let off_x = (-std::f64::consts::PI * scale) as i32;
 
@@ -656,6 +667,24 @@ pub fn render_preview(
                 rgba.copy_within(l..l + 4, dst);
             } else if ra != 0 {
                 rgba.copy_within(r..r + 4, dst);
+            }
+        }
+
+        // Viewer-proofing: 360° viewers sample equirect textures with
+        // clamp-to-edge filtering, so the first and last columns are never
+        // interpolated ACROSS the wrap — any difference between them shows
+        // as a 1px seam even on continuous content. Make them identical
+        // (their average): the boundary then samples the same values from
+        // both sides and disappears under any wrapping mode.
+        for y in 0..canvas_h {
+            let row = y * canvas_w;
+            let (a, b) = (row * 4, (row + canvas_w - 1) * 4);
+            if rgba[a + 3] != 0 && rgba[b + 3] != 0 {
+                for c in 0..3 {
+                    let avg = ((rgba[a + c] as u16 + rgba[b + c] as u16) / 2) as u8;
+                    rgba[a + c] = avg;
+                    rgba[b + c] = avg;
+                }
             }
         }
     }
