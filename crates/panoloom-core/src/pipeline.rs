@@ -533,12 +533,43 @@ pub fn render_preview(
             if coverage.data[y * roi.2 + x] == 0 {
                 continue;
             }
-            let src = (y * roi.2 + x) * 3;
             let dst = (cy as usize * canvas_w + cx as usize) * 4;
+            // First write wins: both strip ends fold onto the wrap column
+            // with COMPLEMENTARY sparse coverage — union them, never
+            // overwrite good pixels with edge artifacts.
+            if rgba[dst + 3] != 0 {
+                continue;
+            }
+            let src = (y * roi.2 + x) * 3;
             rgba[dst] = blended[src];
             rgba[dst + 1] = blended[src + 1];
             rgba[dst + 2] = blended[src + 2];
             rgba[dst + 3] = 255;
+        }
+    }
+
+    // The wrap column (canvas x = 0) is assembled from the blended strip's
+    // OUTERMOST columns, which carry partial-coverage blend artifacts
+    // (near-zero weights normalize dark). Rebuild it from its two sphere
+    // neighbors (x = 1 and x = W-1), which are interior, full-quality
+    // columns — equivalent to what cross-boundary texture filtering would
+    // produce anyway.
+    if canvas_w >= 3 {
+        for y in 0..canvas_h {
+            let row = y * canvas_w;
+            let (l, r) = ((row + 1) * 4, (row + canvas_w - 1) * 4);
+            let dst = row * 4;
+            let (la, ra) = (rgba[l + 3], rgba[r + 3]);
+            if la != 0 && ra != 0 {
+                for c in 0..3 {
+                    rgba[dst + c] = ((rgba[l + c] as u16 + rgba[r + c] as u16) / 2) as u8;
+                }
+                rgba[dst + 3] = 255;
+            } else if la != 0 {
+                rgba.copy_within(l..l + 4, dst);
+            } else if ra != 0 {
+                rgba.copy_within(r..r + 4, dst);
+            }
         }
     }
 
