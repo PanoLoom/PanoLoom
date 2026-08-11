@@ -11,8 +11,15 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 
 // Screenshot the panorama at four yaws so a seam change anywhere on the
-// ring is caught regardless of the default view.
+// ring is caught regardless of the default view. Without WebGL the
+// viewer is a flat 2D canvas showing the WHOLE pano — one shot suffices,
+// but the change is a much smaller fraction of the frame.
 async function sweep() {
+  const flat = await page.evaluate(() => !window.__psv);
+  if (flat) {
+    await page.waitForTimeout(300);
+    return { flat, shots: [await page.locator(".viewer canvas").first().screenshot()] };
+  }
   const shots = [];
   for (const yaw of [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2]) {
     await page.evaluate(
@@ -22,7 +29,7 @@ async function sweep() {
     await page.waitForTimeout(400);
     shots.push(await page.locator(".viewer canvas").first().screenshot());
   }
-  return shots;
+  return { flat, shots };
 }
 
 await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
@@ -59,9 +66,9 @@ await page.waitForTimeout(1200);
 const after = await sweep();
 
 let worst = 0;
-for (let k = 0; k < before.length; k++) {
-  const a = PNG.sync.read(before[k]);
-  const b = PNG.sync.read(after[k]);
+for (let k = 0; k < before.shots.length; k++) {
+  const a = PNG.sync.read(before.shots[k]);
+  const b = PNG.sync.read(after.shots[k]);
   let changed = 0;
   const n = Math.min(a.data.length, b.data.length);
   for (let i = 0; i < n; i += 4) {
@@ -73,8 +80,13 @@ for (let k = 0; k < before.length; k++) {
   }
   worst = Math.max(worst, (100 * changed) / (n / 4));
 }
-console.log(`max pixels changed by mask across views: ${worst.toFixed(2)}%`);
-if (worst < 0.25) throw new Error("mask had no visible effect on the seam");
+// Flat canvases are deterministic 2D draws (no render noise), so a much
+// lower threshold is still far above zero.
+const threshold = after.flat ? 0.03 : 0.25;
+console.log(
+  `max pixels changed by mask across views: ${worst.toFixed(3)}% (flat=${after.flat})`,
+);
+if (worst < threshold) throw new Error("mask had no visible effect on the seam");
 
 if (errors.length) {
   console.log("PAGE ERRORS:", errors);
