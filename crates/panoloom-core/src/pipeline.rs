@@ -439,6 +439,13 @@ pub fn render_preview(
         s_masks.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
         s_imgs.push(w_img);
     }
+    // Rescued shots are placed from pose metadata (~1° accuracy) — good
+    // enough to fill featureless holes, not good enough to overlap matched
+    // shots (a 1° offset ghosts hard edges like ridge lines). Suppress
+    // their masks wherever matched coverage exists, keeping a small eroded
+    // overlap band for blending.
+    suppress_rescued_masks(&mut s_masks, &s_corners, alignment, 2);
+
     let s_rgb: Vec<RgbImage> = s_imgs
         .iter()
         .map(|w| RgbImage::new(w.width, w.height, w.data.clone()))
@@ -506,7 +513,10 @@ pub fn render_preview(
 
     // Paste onto the full equirect canvas. In warp coordinates the full
     // sphere spans u in [-pi*scale, pi*scale), v in [0, pi*scale].
-    let canvas_w = full_width_at(scale);
+    // Canvas width uses FLOOR: a full-360 ROI spans 2*trunc(pi*s)+1 >=
+    // floor(2*pi*s) columns, so every canvas column is covered (extras
+    // wrap-fold); ceil left a one-pixel black hairline at the wrap seam.
+    let canvas_w = (2.0 * std::f64::consts::PI * scale).floor() as usize;
     let canvas_h = (std::f64::consts::PI * scale).ceil() as usize;
     let mut rgba = vec![0u8; canvas_w * canvas_h * 4];
     let off_x = (-std::f64::consts::PI * scale) as i32;
@@ -537,6 +547,85 @@ pub fn render_preview(
         width: canvas_w,
         height: canvas_h,
     })
+}
+
+/// Zeroes rescued images' mask pixels wherever ERODED matched coverage
+/// exists: metadata-placed shots only fill holes, with a small overlap band
+/// (the erosion ring) left for blending. Planar coordinates — pairs
+/// spanning the 360° wrap are ignored, consistent with OpenCV's own
+/// overlap handling.
+fn suppress_rescued_masks(
+    masks: &mut [GrayImage],
+    corners: &[(i32, i32)],
+    alignment: &Alignment,
+    erode_iters: usize,
+) {
+    let rescued: Vec<usize> = (0..masks.len())
+        .filter(|&i| alignment.images[i].rescued)
+        .collect();
+    if rescued.is_empty() || rescued.len() == masks.len() {
+        return;
+    }
+    let matched: Vec<usize> = (0..masks.len())
+        .filter(|&i| !alignment.images[i].rescued)
+        .collect();
+
+    let m_corners: Vec<(i32, i32)> = matched.iter().map(|&i| corners[i]).collect();
+    let m_sizes: Vec<(i32, i32)> = matched
+        .iter()
+        .map(|&i| (masks[i].width as i32, masks[i].height as i32))
+        .collect();
+    let roi = crate::blend::result_roi(&m_corners, &m_sizes);
+    let mut union = vec![0u8; roi.2 * roi.3];
+    for &i in &matched {
+        let (cx0, cy0) = (corners[i].0 - roi.0, corners[i].1 - roi.1);
+        for y in 0..masks[i].height {
+            for x in 0..masks[i].width {
+                if masks[i].data[y * masks[i].width + x] != 0 {
+                    union[(cy0 as usize + y) * roi.2 + cx0 as usize + x] = 255;
+                }
+            }
+        }
+    }
+    for _ in 0..erode_iters {
+        union = erode3(&union, roi.2, roi.3);
+    }
+
+    for &i in &rescued {
+        let (w, h) = (masks[i].width, masks[i].height);
+        for y in 0..h {
+            for x in 0..w {
+                let gx = corners[i].0 + x as i32 - roi.0;
+                let gy = corners[i].1 + y as i32 - roi.1;
+                if gx >= 0
+                    && gy >= 0
+                    && (gx as usize) < roi.2
+                    && (gy as usize) < roi.3
+                    && union[gy as usize * roi.2 + gx as usize] != 0
+                {
+                    masks[i].data[y * w + x] = 0;
+                }
+            }
+        }
+    }
+}
+
+/// 3x3 rect erosion (min filter), border treated as covered so the erosion
+/// only recedes at real coverage boundaries.
+fn erode3(mask: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let mut out = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = 255u8;
+            for dy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                for dx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                    v = v.min(mask[dy * w + dx]);
+                }
+            }
+            out[y * w + x] = v;
+        }
+    }
+    out
 }
 
 /// Plain bilinear RGB resize (browser-quality; not a parity surface).
