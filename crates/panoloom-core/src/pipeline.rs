@@ -451,15 +451,55 @@ pub fn render_preview(
         .map(|w| RgbImage::new(w.width, w.height, w.data.clone()))
         .collect();
     let compensator = BlocksGainCompensator::feed(&s_corners, &s_rgb, &s_masks);
-    let mut seam_masks: Vec<GrayImage> = s_masks.clone();
-    find_seams_graph_cut_color(&s_imgs, &s_corners, &mut seam_masks);
+
+    // --- wrap unrolling ---
+    // A planar pipeline cannot blend across the 360° wrap: seams stop and
+    // exposure steps at the meridian, and the strip's outer columns carry
+    // multiband edge artifacts. Standard fix: UNROLL the cylinder — images
+    // near the strip's left end are duplicated one full period to the
+    // right, so seam finding and blending continue naturally across the
+    // wrap; the paste later prefers that seamless extension region.
+    let s_sizes: Vec<(i32, i32)> = s_imgs
+        .iter()
+        .map(|w| (w.width as i32, w.height as i32))
+        .collect();
+    let period_seam = (2.0 * std::f64::consts::PI * seam_scale).floor() as i32;
+    let orig_strip = result_roi(&s_corners, &s_sizes);
+    let full_wrap = orig_strip.2 as i32 >= period_seam - 2;
+    let max_w_seam = s_sizes.iter().map(|s| s.0).max().unwrap_or(0);
+    // (source index, duplicated one period to the right?)
+    let mut entries: Vec<(usize, bool)> = (0..n).map(|i| (i, false)).collect();
+    if full_wrap {
+        for i in 0..n {
+            if s_corners[i].0 - orig_strip.0 < max_w_seam {
+                entries.push((i, true));
+            }
+        }
+    }
+
+    // Seam finding over the unrolled layout (duplicates get independent
+    // masks — their seams against right-end images ARE the wrap seams).
+    let e_imgs: Vec<PixelImage> = entries.iter().map(|&(i, _)| s_imgs[i].clone()).collect();
+    let e_corners: Vec<(i32, i32)> = entries
+        .iter()
+        .map(|&(i, dup)| {
+            (
+                s_corners[i].0 + if dup { period_seam } else { 0 },
+                s_corners[i].1,
+            )
+        })
+        .collect();
+    let mut e_seam_masks: Vec<GrayImage> =
+        entries.iter().map(|&(i, _)| s_masks[i].clone()).collect();
+    find_seams_graph_cut_color(&e_imgs, &e_corners, &mut e_seam_masks);
 
     // --- stage 2: compose scale — warp sharp, apply gains, blend ---
     let compose_mul = compose_scale / alignment.warped_image_scale;
+    let period_comp = (2.0 * std::f64::consts::PI * compose_scale).floor() as i32;
     let mut warper = SphericalWarper::new(compose_scale as f32);
-    let mut corners = Vec::new();
-    let mut sizes = Vec::new();
-    let mut fed: Vec<(RgbImage, GrayImage)> = Vec::new();
+    let mut comp_corners: Vec<(i32, i32)> = Vec::with_capacity(n);
+    let mut comp_rgb: Vec<RgbImage> = Vec::with_capacity(n);
+    let mut comp_cov: Vec<GrayImage> = Vec::with_capacity(n);
     for (i, (src, ai)) in sources.iter().zip(&alignment.images).enumerate() {
         let (sw, sh) = (
             ((src.width as f64) * compose_mul).round().max(2.0) as usize,
@@ -485,31 +525,70 @@ pub fn render_preview(
             Interp::Nearest,
             Border::Constant0,
         );
-
         let mut rgb = RgbImage::new(w_img.width, w_img.height, w_img.data);
         compensator.apply(i, &mut rgb);
-
-        // Upscale dilated seam masks to compose size, AND with coverage.
-        let dilated = dilate3(&seam_masks[i]);
-        let up = crate::imgproc::resize_bilinear(&dilated, w_mask.width, w_mask.height);
-        let mut final_mask = vec![0u8; w_mask.width * w_mask.height];
-        for p in 0..final_mask.len() {
-            final_mask[p] = up.data[p] & w_mask.data[p];
-        }
-        corners.push(tl);
-        sizes.push((rgb.width as i32, rgb.height as i32));
-        fed.push((rgb, GrayImage::new(w_mask.width, w_mask.height, final_mask)));
+        comp_corners.push(tl);
+        comp_rgb.push(rgb);
+        comp_cov.push(GrayImage::new(w_mask.width, w_mask.height, w_mask.data));
     }
 
-    let roi = result_roi(&corners, &sizes);
+    // Feed every layout entry with ITS OWN seam mask, duplicates offset by
+    // one compose-scale period.
+    let e_comp_corners: Vec<(i32, i32)> = entries
+        .iter()
+        .map(|&(i, dup)| {
+            (
+                comp_corners[i].0 + if dup { period_comp } else { 0 },
+                comp_corners[i].1,
+            )
+        })
+        .collect();
+    let e_sizes: Vec<(i32, i32)> = entries
+        .iter()
+        .map(|&(i, _)| (comp_rgb[i].width as i32, comp_rgb[i].height as i32))
+        .collect();
+    let roi = result_roi(&e_comp_corners, &e_sizes);
     let bands = num_bands_for(roi.2, roi.3);
     let mut blender = MultiBandBlender::new(bands);
     blender.prepare(roi.0, roi.1, roi.2, roi.3);
-    for (i, (rgb, mask)) in fed.iter().enumerate() {
-        blender.feed(&rgb.data, rgb.width, rgb.height, mask, corners[i]);
+    for (e, &(i, _)) in entries.iter().enumerate() {
+        let cov = &comp_cov[i];
+        let dilated = dilate3(&e_seam_masks[e]);
+        let up = crate::imgproc::resize_bilinear(&dilated, cov.width, cov.height);
+        let mut final_mask = vec![0u8; cov.width * cov.height];
+        for p in 0..final_mask.len() {
+            final_mask[p] = up.data[p] & cov.data[p];
+        }
+        blender.feed(
+            &comp_rgb[i].data,
+            comp_rgb[i].width,
+            comp_rgb[i].height,
+            &GrayImage::new(cov.width, cov.height, final_mask),
+            e_comp_corners[e],
+        );
     }
     let (blended, coverage) = blender.blend();
     let scale = compose_scale;
+
+    // Strip ranges for the two-pass paste: the unrolled extension starts
+    // where the FIRST duplicate begins (its overlap with right-end
+    // originals is the true cross-wrap blend); its tail (the duplicates'
+    // own coverage boundary) is trimmed — the original strip covers those
+    // canvas columns instead.
+    let originals_end: i32 = (0..n)
+        .map(|i| comp_corners[i].0 + comp_rgb[i].width as i32)
+        .max()
+        .unwrap()
+        - roi.0;
+    let ext_start: i32 = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, &(_, dup))| dup)
+        .map(|(e, _)| e_comp_corners[e].0 - roi.0)
+        .min()
+        .unwrap_or(roi.2 as i32);
+    let ext_len = roi.2 as i32 - ext_start;
+    let ext_trim = 64.min(ext_len / 2).max(0);
 
     // Paste onto the full equirect canvas. In warp coordinates the full
     // sphere spans u in [-pi*scale, pi*scale), v in [0, pi*scale].
@@ -520,45 +599,53 @@ pub fn render_preview(
     let canvas_h = (std::f64::consts::PI * scale).ceil() as usize;
     let mut rgba = vec![0u8; canvas_w * canvas_h * 4];
     let off_x = (-std::f64::consts::PI * scale) as i32;
-    for y in 0..roi.3 {
-        let cy = roi.1 + y as i32; // canvas v origin coincides with warp v=0
-        if cy < 0 || cy >= canvas_h as i32 {
-            continue;
-        }
-        for x in 0..roi.2 {
-            let mut cx = roi.0 - off_x + x as i32;
-            // Wrap horizontally.
-            let w = canvas_w as i32;
-            cx = ((cx % w) + w) % w;
-            if coverage.data[y * roi.2 + x] == 0 {
-                continue;
-            }
-            let dst = (cy as usize * canvas_w + cx as usize) * 4;
-            // First write wins: both strip ends fold onto the wrap column
-            // with COMPLEMENTARY sparse coverage — union them, never
-            // overwrite good pixels with edge artifacts.
-            if rgba[dst + 3] != 0 {
-                continue;
-            }
-            let src = (y * roi.2 + x) * 3;
-            rgba[dst] = blended[src];
-            rgba[dst + 1] = blended[src + 1];
-            rgba[dst + 2] = blended[src + 2];
-            rgba[dst + 3] = 255;
-        }
-    }
 
-    // The wrap column (canvas x = 0) is assembled from the blended strip's
-    // OUTERMOST columns, which carry partial-coverage blend artifacts
-    // (near-zero weights normalize dark). Rebuild it from its two sphere
-    // neighbors (x = 1 and x = W-1), which are interior, full-quality
-    // columns — equivalent to what cross-boundary texture filtering would
-    // produce anyway.
+    // Two-pass paste, first write wins. Pass 1 is the unrolled EXTENSION
+    // (minus its trimmed tail): those columns were blended with true
+    // cross-wrap neighbors, so they replace the artifact-prone outer
+    // columns of the original strip at the meridian. Pass 2 fills the rest.
+    let paste = |x0: i32, x1: i32, rgba: &mut Vec<u8>| {
+        let (x0, x1) = (x0.max(0) as usize, x1.max(0) as usize);
+        for y in 0..roi.3 {
+            let cy = roi.1 + y as i32; // canvas v origin = warp v=0
+            if cy < 0 || cy >= canvas_h as i32 {
+                continue;
+            }
+            for x in x0..x1.min(roi.2) {
+                let mut cx = roi.0 - off_x + x as i32;
+                let w = canvas_w as i32;
+                cx = ((cx % w) + w) % w;
+                if coverage.data[y * roi.2 + x] == 0 {
+                    continue;
+                }
+                let dst = (cy as usize * canvas_w + cx as usize) * 4;
+                if rgba[dst + 3] != 0 {
+                    continue;
+                }
+                let src = (y * roi.2 + x) * 3;
+                rgba[dst] = blended[src];
+                rgba[dst + 1] = blended[src + 1];
+                rgba[dst + 2] = blended[src + 2];
+                rgba[dst + 3] = 255;
+            }
+        }
+    };
+    if ext_len > 0 {
+        paste(ext_start, roi.2 as i32 - ext_trim, &mut rgba);
+    }
+    paste(0, originals_end, &mut rgba);
+
+    // The exact meridian column can remain sparse (only ROI-extremity
+    // pixels land there); rebuild uncovered rows from the two sphere
+    // neighbors — equivalent to cross-boundary texture filtering.
     if canvas_w >= 3 {
         for y in 0..canvas_h {
             let row = y * canvas_w;
-            let (l, r) = ((row + 1) * 4, (row + canvas_w - 1) * 4);
             let dst = row * 4;
+            if rgba[dst + 3] != 0 {
+                continue;
+            }
+            let (l, r) = ((row + 1) * 4, (row + canvas_w - 1) * 4);
             let (la, ra) = (rgba[l + 3], rgba[r + 3]);
             if la != 0 && ra != 0 {
                 for c in 0..3 {
