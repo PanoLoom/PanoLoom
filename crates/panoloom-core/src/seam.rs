@@ -409,10 +409,10 @@ pub fn find_seams_graph_cut_color(
     // The serial pair order (OpenCV's nested i<j loop). Each pair reads and
     // writes ONLY masks[i] and masks[j], so the result is determined by the
     // per-image order of pairs alone: pairs sharing no image commute
-    // exactly. We exploit that to run the expensive max-flows in parallel
-    // rounds (Kahn layering: a pair is eligible when it is the EARLIEST
-    // remaining pair for both of its images), which reproduces the serial
-    // output bit-for-bit.
+    // exactly. The parallel scheduler below preserves per-image order (a
+    // pair runs when it is the EARLIEST remaining pair for both images),
+    // which reproduces the serial output bit-for-bit — but with no round
+    // barriers: a pair starts the moment its two predecessors finish.
     type Roi = (i32, i32, i32, i32);
     let mut pairs: Vec<(usize, usize, Roi)> = Vec::new();
     for i in 0..imgs.len().saturating_sub(1) {
@@ -424,63 +424,102 @@ pub fn find_seams_graph_cut_color(
             }
         }
     }
-    let mut queues: Vec<std::collections::VecDeque<usize>> =
-        vec![std::collections::VecDeque::new(); imgs.len()];
-    for (p, &(i, j, _)) in pairs.iter().enumerate() {
-        queues[i].push_back(p);
-        queues[j].push_back(p);
-    }
 
-    // Masks move into mutexes for the parallel rounds; a round's pairs are
-    // image-disjoint by construction, so every lock is uncontended.
-    let mask_cells: Vec<std::sync::Mutex<GrayImage>> = masks
-        .iter_mut()
-        .map(|m| std::sync::Mutex::new(std::mem::replace(m, GrayImage::new(0, 0, Vec::new()))))
-        .collect();
-
-    let mut remaining = pairs.len();
-    while remaining > 0 {
-        let round: Vec<usize> = pairs
-            .iter()
-            .enumerate()
-            .filter(|&(p, &(i, j, _))| {
-                queues[i].front() == Some(&p) && queues[j].front() == Some(&p)
-            })
-            .map(|(p, _)| p)
-            .collect();
-        debug_assert!(!round.is_empty());
-        crate::par::map(&round, |&p| {
-            let (i, j, roi) = pairs[p];
-            let mut mask_i = mask_cells[i].lock().unwrap();
-            let mut mask_j = mask_cells[j].lock().unwrap();
-            // Bounding boxes of warped sphere images (pole shots span nearly
-            // the whole strip) intersect far more often than the MASKS do,
-            // and when no pixel carries both masks the cut's mask update is
-            // a no-op (every write is guarded by the other image's mask) —
-            // skip the max-flow entirely. Output is identical to OpenCV's,
-            // which runs every box pair.
-            if masks_intersect(corners[i], corners[j], &mask_i, &mask_j, roi) {
+    // Bounding boxes of warped sphere images (pole shots span nearly the
+    // whole strip) intersect far more often than the MASKS do, and when no
+    // pixel carries both masks the cut's mask update is a no-op (every
+    // write is guarded by the other image's mask) — `run_pair` skips the
+    // max-flow entirely then. Output is identical to OpenCV's, which runs
+    // every box pair.
+    let run_pair =
+        |i: usize, j: usize, roi: Roi, mask_i: &mut GrayImage, mask_j: &mut GrayImage| {
+            if masks_intersect(corners[i], corners[j], mask_i, mask_j, roi) {
                 find_in_pair(
-                    &imgs[i],
-                    &imgs[j],
-                    corners[i],
-                    corners[j],
-                    &mut mask_i,
-                    &mut mask_j,
-                    roi,
+                    &imgs[i], &imgs[j], corners[i], corners[j], mask_i, mask_j, roi,
                 );
             }
-        });
-        for &p in &round {
-            let (i, j, _) = pairs[p];
-            queues[i].pop_front();
-            queues[j].pop_front();
-            remaining -= 1;
-        }
+        };
+
+    #[cfg(not(feature = "parallel"))]
+    for &(i, j, roi) in &pairs {
+        let (a, b) = masks.split_at_mut(j);
+        run_pair(i, j, roi, &mut a[i], &mut b[0]);
     }
 
-    for (m, cell) in masks.iter_mut().zip(mask_cells) {
-        *m = cell.into_inner().unwrap();
+    #[cfg(feature = "parallel")]
+    {
+        use std::sync::Mutex;
+
+        // queues[img] = that image's pair indices in serial order;
+        // fronts[img] = how many have completed.
+        let mut queues: Vec<Vec<usize>> = vec![Vec::new(); imgs.len()];
+        for (p, &(i, j, _)) in pairs.iter().enumerate() {
+            queues[i].push(p);
+            queues[j].push(p);
+        }
+        let mask_cells: Vec<Mutex<GrayImage>> = masks
+            .iter_mut()
+            .map(|m| Mutex::new(std::mem::replace(m, GrayImage::new(0, 0, Vec::new()))))
+            .collect();
+        let fronts = Mutex::new(vec![0usize; imgs.len()]);
+
+        let eligible = |fronts: &[usize], p: usize| {
+            let (i, j, _) = pairs[p];
+            queues[i].get(fronts[i]) == Some(&p) && queues[j].get(fronts[j]) == Some(&p)
+        };
+
+        // Executes pair p, then advances both images' queues and returns
+        // any pairs that just became runnable.
+        let execute = |p: usize| -> Vec<usize> {
+            let (i, j, roi) = pairs[p];
+            {
+                let mut mask_i = mask_cells[i].lock().unwrap();
+                let mut mask_j = mask_cells[j].lock().unwrap();
+                run_pair(i, j, roi, &mut mask_i, &mut mask_j);
+            }
+            let mut f = fronts.lock().unwrap();
+            f[i] += 1;
+            f[j] += 1;
+            let mut next = Vec::new();
+            for img in [i, j] {
+                if let Some(&q) = queues[img].get(f[img]) {
+                    if eligible(&f, q) {
+                        next.push(q);
+                    }
+                }
+            }
+            next
+        };
+
+        // A pair becomes eligible exactly when its LAST predecessor
+        // completes, so each pair is spawned exactly once — no dedup or
+        // done-flags needed.
+        fn spawn_chain<'s>(
+            s: &rayon::Scope<'s>,
+            exec: &'s (dyn Fn(usize) -> Vec<usize> + Sync),
+            p: usize,
+        ) {
+            s.spawn(move |s| {
+                for q in exec(p) {
+                    spawn_chain(s, exec, q);
+                }
+            });
+        }
+
+        let initial: Vec<usize> = {
+            let f = fronts.lock().unwrap();
+            (0..pairs.len()).filter(|&p| eligible(&f, p)).collect()
+        };
+        let exec_ref: &(dyn Fn(usize) -> Vec<usize> + Sync) = &execute;
+        rayon::scope(|s| {
+            for p in initial {
+                spawn_chain(s, exec_ref, p);
+            }
+        });
+
+        for (m, cell) in masks.iter_mut().zip(mask_cells) {
+            *m = cell.into_inner().unwrap();
+        }
     }
 }
 

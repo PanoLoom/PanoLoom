@@ -32,9 +32,12 @@ your machine via Rust compiled to WebAssembly, hosted as a static site.
   rayon pool over Web Workers (the status bar shows the pool size); otherwise it falls
   back to a single-threaded build automatically.
 
+- **Installable & offline**: the app is a PWA — after the first visit it loads and
+  stitches with no connection at all (nothing ever leaves your machine anyway).
+
 Typical numbers (M2 MacBook, Chrome, 10-thread pool): an 8-shot ring stitches in ~1.4 s;
-a real 33-shot 12.6 MP DJI sphere aligns + previews in ~56 s and exports 17172×8586 in
-~3.6 min.
+a real 33-shot 12.6 MP DJI sphere aligns + previews in ~56 s and exports its 147 MP
+JPEG in ~3.3 min.
 
 ## Why
 

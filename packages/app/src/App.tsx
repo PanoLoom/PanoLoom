@@ -376,26 +376,37 @@ export function App() {
 
       exportAborted.current = false;
       const loaded = new Set<number>();
+      // Decode a band's sources on the main thread and hand them to the
+      // worker. Runs CONCURRENTLY with the previous band's composite (the
+      // client queue defers the transfers until the worker is free, but
+      // the expensive decode overlaps fully).
+      const ensureLoaded = async (b: number) => {
+        const band = plan.bands[b];
+        if (!band) return;
+        for (const id of band.needed) {
+          if (loaded.has(id) || exportAborted.current) continue;
+          loaded.add(id);
+          const full = await decodeFull(files.current.get(id)!);
+          await engine.current!.exportSetImage(
+            id,
+            full.rgba,
+            full.width,
+            full.height,
+          );
+        }
+      };
+
+      await ensureLoaded(0);
       for (let b = 0; b < plan.bands.length; b++) {
         if (exportAborted.current) {
           await engine.current!.cancelExport();
           return;
         }
         setExporting({ kind: "running", band: b, bands: plan.bands.length });
-        const needed = plan.bands[b]!.needed;
-        for (const id of needed) {
-          if (!loaded.has(id)) {
-            const full = await decodeFull(files.current.get(id)!);
-            await engine.current!.exportSetImage(
-              id,
-              full.rgba,
-              full.width,
-              full.height,
-            );
-            loaded.add(id);
-          }
-        }
-        await engine.current!.exportBand(b);
+        await Promise.all([
+          engine.current!.exportBand(b),
+          ensureLoaded(b + 1),
+        ]);
         // Drop images the remaining bands don't need.
         const stillNeeded = new Set(
           plan.bands.slice(b + 1).flatMap((band) => band.needed),

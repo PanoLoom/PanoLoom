@@ -151,18 +151,43 @@ impl Exporter {
         // Coverage crop: the JPEG carries only covered rows (and columns,
         // when the pano doesn't wrap); GPano croppedArea* fields tell
         // viewers where the crop sits on the full sphere.
+        //
+        // Warp bounding boxes over-report vertically (a high-pitch shot's
+        // box reaches the pole even where its mask is empty), so the row
+        // range is refined from the SEAM MASKS — actual coverage — mapped
+        // proportionally into each entry's compose ROI, padded by the
+        // multiband pyramid spread.
         let full_wrap = stage.entries.iter().any(|&(_, dup)| dup);
-        let cy0 = entries
-            .iter()
-            .map(|e| e.roi.1)
-            .min()
-            .unwrap_or(0)
+        let mb_bands = num_bands_for(strip.2, canvas_h);
+        let margin = 1i32 << mb_bands;
+        let (mut cov_y0, mut cov_y1) = (i32::MAX, i32::MIN);
+        for (e, geom) in entries.iter().enumerate() {
+            let m = &seam_masks_dilated[e];
+            let mut rows = (0..m.height).filter(|&r| {
+                m.data[r * m.width..(r + 1) * m.width]
+                    .iter()
+                    .any(|&v| v != 0)
+            });
+            if let Some(r0) = rows.next() {
+                let r1 = rows.next_back().unwrap_or(r0);
+                let scale_y = geom.roi.3 as f64 / m.height as f64;
+                cov_y0 = cov_y0.min(geom.roi.1 + (r0 as f64 * scale_y).floor() as i32);
+                cov_y1 = cov_y1.max(geom.roi.1 + ((r1 + 1) as f64 * scale_y).ceil() as i32);
+            }
+        }
+        let (bbox_y0, bbox_y1) = (
+            entries.iter().map(|e| e.roi.1).min().unwrap_or(0),
+            entries
+                .iter()
+                .map(|e| e.roi.1 + e.roi.3)
+                .max()
+                .unwrap_or(canvas_h as i32),
+        );
+        let cy0 = (cov_y0.saturating_sub(margin))
+            .max(bbox_y0)
             .clamp(0, canvas_h as i32) as usize;
-        let cy1 = entries
-            .iter()
-            .map(|e| e.roi.1 + e.roi.3)
-            .max()
-            .unwrap_or(canvas_h as i32)
+        let cy1 = (cov_y1.saturating_add(margin))
+            .min(bbox_y1)
             .clamp(cy0 as i32, canvas_h as i32) as usize;
         let off_x = (-std::f64::consts::PI * compose_scale) as i32;
         let (cx0, cw) = if full_wrap {
@@ -199,7 +224,6 @@ impl Exporter {
             y = y1;
         }
 
-        let mb_bands = num_bands_for(strip.2, canvas_h);
         Ok(Self {
             canvas_w,
             canvas_h,
