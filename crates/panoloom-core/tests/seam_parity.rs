@@ -3,6 +3,8 @@
 //! seam masks with the oracle's. Deterministic max-flow on identical f32
 //! inputs — expect (near-)bit-equality.
 
+#![allow(clippy::needless_range_loop)]
+
 use std::path::{Path, PathBuf};
 
 use panoloom_core::imgproc::GrayImage;
