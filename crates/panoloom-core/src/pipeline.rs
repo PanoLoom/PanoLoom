@@ -466,14 +466,26 @@ pub(crate) struct SeamStage {
     pub e_seam_masks: Vec<GrayImage>,
 }
 
-pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> SeamStage {
+/// User paint-mask values (registration-scale, one byte per pixel).
+pub const MASK_EXCLUDE: u8 = 1;
+pub const MASK_PREFER: u8 = 2;
+
+pub(crate) fn seam_stage(
+    sources: &[&PixelImage],
+    alignment: &Alignment,
+    user_masks: &[Option<&GrayImage>],
+) -> SeamStage {
     let n = alignment.images.len();
     let seam_scale = snap_scale(alignment.warped_image_scale * SEAM_FROM_WORK_SCALE);
     let seam_mul = seam_scale / alignment.warped_image_scale;
 
-    let inputs: Vec<(&PixelImage, &AlignedImage)> =
-        sources.iter().copied().zip(&alignment.images).collect();
-    let warped = crate::par::map(&inputs, |&(src, ai)| {
+    let inputs: Vec<(usize, &PixelImage, &AlignedImage)> = sources
+        .iter()
+        .zip(&alignment.images)
+        .enumerate()
+        .map(|(i, (src, ai))| (i, *src, ai))
+        .collect();
+    let warped = crate::par::map(&inputs, |&(i, src, ai)| {
         let mut seam_warper = SphericalWarper::new(seam_scale as f32);
         let (sw, sh) = (
             ((src.width as f64) * seam_mul).round().max(2.0) as usize,
@@ -498,20 +510,38 @@ pub(crate) fn seam_stage(sources: &[&PixelImage], alignment: &Alignment) -> Seam
             Interp::Nearest,
             Border::Constant0,
         );
+        // Warp the user paint mask through the identical geometry so its
+        // labels land on the same seam-scale grid as the coverage mask.
+        let w_user = user_masks.get(i).copied().flatten().map(|um| {
+            let small_um = resize_nearest_gray(um, sw, sh);
+            let src_um = PixelImage::new(sw, sh, 1, small_um.data);
+            let (_, w) = seam_warper.warp(
+                &src_um,
+                &k,
+                &ai.camera.r,
+                Interp::Nearest,
+                Border::Constant0,
+            );
+            GrayImage::new(w.width, w.height, w.data)
+        });
         (
             tl,
             w_img,
             GrayImage::new(w_mask.width, w_mask.height, w_mask.data),
+            w_user,
         )
     });
     let mut s_corners = Vec::with_capacity(n);
     let mut s_imgs: Vec<PixelImage> = Vec::with_capacity(n);
     let mut s_masks: Vec<GrayImage> = Vec::with_capacity(n);
-    for (tl, w_img, w_mask) in warped {
+    let mut s_user: Vec<Option<GrayImage>> = Vec::with_capacity(n);
+    for (tl, w_img, w_mask, w_user) in warped {
         s_corners.push(tl);
         s_imgs.push(w_img);
         s_masks.push(w_mask);
+        s_user.push(w_user);
     }
+    apply_user_masks(&mut s_masks, &s_user, &s_corners);
     // Rescued shots fill holes only (see suppress_rescued_masks).
     suppress_rescued_masks(&mut s_masks, &s_corners, alignment, 2);
 
@@ -577,6 +607,7 @@ pub struct Preview {
 pub fn render_preview(
     sources: &[&PixelImage],
     alignment: &Alignment,
+    user_masks: &[Option<&GrayImage>],
     max_width: usize,
 ) -> Result<Preview, String> {
     let n = alignment.images.len();
@@ -595,7 +626,7 @@ pub fn render_preview(
     };
     let compose_scale = snap_scale(compose_scale);
 
-    let stage = stage_timed!("seam-stage", seam_stage(sources, alignment));
+    let stage = stage_timed!("seam-stage", seam_stage(sources, alignment, user_masks));
     let (entries, compensator, e_seam_masks) =
         (stage.entries, stage.compensator, stage.e_seam_masks);
 
@@ -825,6 +856,69 @@ pub fn render_preview(
 /// (the erosion ring) left for blending. Planar coordinates — pairs
 /// spanning the 360° wrap are ignored, consistent with OpenCV's own
 /// overlap handling.
+/// Nearest-neighbor resize for label masks (values must survive exactly).
+fn resize_nearest_gray(src: &GrayImage, dst_w: usize, dst_h: usize) -> GrayImage {
+    let mut data = vec![0u8; dst_w * dst_h];
+    for y in 0..dst_h {
+        let sy = ((y as f64 + 0.5) * src.height as f64 / dst_h as f64) as usize;
+        let sy = sy.min(src.height - 1);
+        for x in 0..dst_w {
+            let sx = ((x as f64 + 0.5) * src.width as f64 / dst_w as f64) as usize;
+            data[y * dst_w + x] = src.data[sy * src.width + sx.min(src.width - 1)];
+        }
+    }
+    GrayImage::new(dst_w, dst_h, data)
+}
+
+/// Applies painted masks to the seam coverage masks:
+/// EXCLUDE zeroes the image's own coverage (its pixels never appear
+/// there); PREFER zeroes every OTHER image's coverage underneath — but
+/// only where the preferring image actually covers, so preference never
+/// punches holes.
+fn apply_user_masks(
+    s_masks: &mut [GrayImage],
+    s_user: &[Option<GrayImage>],
+    corners: &[(i32, i32)],
+) {
+    for i in 0..s_masks.len() {
+        if let Some(um) = &s_user[i] {
+            for p in 0..s_masks[i].data.len() {
+                if um.data[p] == MASK_EXCLUDE {
+                    s_masks[i].data[p] = 0;
+                }
+            }
+        }
+    }
+    for i in 0..s_masks.len() {
+        let Some(um) = &s_user[i] else { continue };
+        if !um.data.contains(&MASK_PREFER) {
+            continue;
+        }
+        for j in 0..s_masks.len() {
+            if j == i {
+                continue;
+            }
+            let (jw, jh) = (s_masks[j].width, s_masks[j].height);
+            for y in 0..jh {
+                let uy = corners[j].1 + y as i32 - corners[i].1;
+                if uy < 0 || uy as usize >= um.height {
+                    continue;
+                }
+                for x in 0..jw {
+                    let ux = corners[j].0 + x as i32 - corners[i].0;
+                    if ux < 0 || ux as usize >= um.width {
+                        continue;
+                    }
+                    let up = uy as usize * um.width + ux as usize;
+                    if um.data[up] == MASK_PREFER && s_masks[i].data[up] != 0 {
+                        s_masks[j].data[y * jw + x] = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn suppress_rescued_masks(
     masks: &mut [GrayImage],
     corners: &[(i32, i32)],
@@ -988,5 +1082,52 @@ mod tests {
                 assert!((r[a][b] - cam.r[a][b]).abs() < 1e-6, "({a},{b})");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    fn gray(w: usize, h: usize, v: u8) -> GrayImage {
+        GrayImage::new(w, h, vec![v; w * h])
+    }
+
+    #[test]
+    fn exclude_zeroes_own_coverage_only() {
+        let mut masks = vec![gray(4, 4, 255), gray(4, 4, 255)];
+        let mut um = gray(4, 4, 0);
+        um.data[5] = MASK_EXCLUDE; // (1,1) of image 0
+        let user = vec![Some(um), None];
+        apply_user_masks(&mut masks, &user, &[(0, 0), (2, 0)]);
+        assert_eq!(masks[0].data[5], 0);
+        assert_eq!(masks[0].data[6], 255);
+        assert!(masks[1].data.iter().all(|&v| v == 255));
+    }
+
+    #[test]
+    fn prefer_zeroes_competitors_under_own_coverage() {
+        // Image 1 overlaps image 0 shifted right by 2.
+        let mut masks = vec![gray(4, 4, 255), gray(4, 4, 255)];
+        let mut um = gray(4, 4, 0);
+        um.data[2] = MASK_PREFER; // (2,0) of image 0 == (0,0) of image 1
+        let user = vec![Some(um), None];
+        apply_user_masks(&mut masks, &user, &[(0, 0), (2, 0)]);
+        // Image 0 keeps its coverage; image 1 loses the contested pixel.
+        assert_eq!(masks[0].data[2], 255);
+        assert_eq!(masks[1].data[0], 0);
+        assert_eq!(masks[1].data[1], 255);
+    }
+
+    #[test]
+    fn prefer_without_own_coverage_is_inert() {
+        let mut masks = vec![gray(4, 4, 255), gray(4, 4, 255)];
+        masks[0].data[2] = 0; // image 0 does NOT cover (2,0)
+        let mut um = gray(4, 4, 0);
+        um.data[2] = MASK_PREFER;
+        let user = vec![Some(um), None];
+        apply_user_masks(&mut masks, &user, &[(0, 0), (2, 0)]);
+        // No hole punched in image 1.
+        assert_eq!(masks[1].data[0], 255);
     }
 }

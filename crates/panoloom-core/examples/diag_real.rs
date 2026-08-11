@@ -171,7 +171,9 @@ fn main() {
                 .iter()
                 .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
                 .collect();
-            let p = panoloom_core::pipeline::render_preview(&srcs, &a, 4096).unwrap();
+            let p =
+                panoloom_core::pipeline::render_preview(&srcs, &a, &vec![None; srcs.len()], 4096)
+                    .unwrap();
             let out = std::path::Path::new(&dir).join("../diag_preview.png");
             let file = std::fs::File::create(&out).unwrap();
             let mut enc = png::Encoder::new(

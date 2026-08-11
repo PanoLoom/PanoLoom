@@ -1,7 +1,9 @@
 // M8 e2e: stitch -> Save Project -> fresh page -> open .panoproj ->
 // re-select photos -> preview restores WITHOUT re-aligning.
 // Requires the preview server on :4173.
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -23,7 +25,7 @@ const jpegs = readdirSync(setDir)
   .sort()
   .map((f) => path.join(setDir, f));
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

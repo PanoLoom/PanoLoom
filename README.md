@@ -26,6 +26,9 @@ your machine via Rust compiled to WebAssembly, hosted as a static site.
   Levenberg–Marquardt optimizer over rotations, field of view, and a PanoTools radial
   lens model (a·b·c, optional center shift) — recovers synthetic ground truth to
   machine precision. All warping is distortion-aware once a lens is fitted.
+- **Seam masks**: paint *avoid* over moving clouds, people, or ghosts so seams route
+  around them, or *prefer* to force a shot to win a region — the same brush workflow
+  as PTGui's masking, honored by both the preview and the full-res export.
 - **Full-resolution export**: composed in memory-bounded horizontal bands (a 17,000 px
   DJI panorama fits comfortably in wasm's address space), JPEG-encoded in wasm, stamped
   with GPano XMP (Photo Sphere) metadata. Partial panoramas export cropped to their
@@ -105,6 +108,8 @@ node packages/app/e2e/m7-export.mjs     # cropped full-res export + GPano valida
 node packages/app/e2e/m8-project.mjs    # project save/load round-trip
 node packages/app/e2e/m8-sample.mjs     # bundled sample set
 node packages/app/e2e/m9-cp-editor.mjs  # control points + lens optimize
+node packages/app/e2e/m10-mask.mjs      # seam masks move the seam
+# any of the above also run cross-engine: BROWSER=webkit|firefox node ...
 ```
 
 Stage-level profiling of the engine on a directory of registration-scale PNGs:
@@ -115,8 +120,9 @@ PANOLOOM_TIMING=1 cargo run --release --example profile_align -- <dir> [priors.j
 
 ## Roadmap
 
-v1.x: masking & seam steering → AKAZE/SIFT for low-texture scenes. Later: RAW input,
-HDR/exposure fusion, WebGPU compositing, 16-bit TIFF, more projections.
+v1.x: AKAZE/SIFT for low-texture scenes → session auto-restore. Later: RAW input,
+HDR/exposure fusion, vignetting optimization, WebGPU compositing, 16-bit TIFF, more
+projections.
 
 ## License
 

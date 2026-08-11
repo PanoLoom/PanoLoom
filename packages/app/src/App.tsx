@@ -10,6 +10,7 @@ import { buildProject, parseProject, type ParsedProject } from "./lib/project";
 import { deriveProjectName, sanitizeProjectName } from "./lib/projectName";
 import { Viewer, type SphereCorrection } from "./components/Viewer";
 import { CpEditor } from "./components/CpEditor";
+import { MaskEditor, type MaskMap } from "./components/MaskEditor";
 import type { EngineControlPoint, OptimizeFlags } from "./engine/protocol";
 
 type Shot = Omit<DecodedImage, "rgba"> & {
@@ -120,6 +121,10 @@ export function App() {
   // Control points (registration coords); null until first generated.
   const [cps, setCps] = useState<EngineControlPoint[] | null>(null);
   const [cpEditorOpen, setCpEditorOpen] = useState(false);
+  // Painted seam masks (registration dims) + ids not yet sent to engine.
+  const [maskMap, setMaskMap] = useState<MaskMap>(new Map());
+  const [maskEditorOpen, setMaskEditorOpen] = useState(false);
+  const dirtyMasks = useRef<Set<number>>(new Set());
   // Orientation adjustment (degrees) — previewed live, baked on Apply.
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [adjust, setAdjust] = useState({ yaw: 0, pitch: 0, roll: 0 });
@@ -219,6 +224,18 @@ export function App() {
             { ...meta, id: entry.id, dropped: false, rescued: false },
           ]);
         }
+        // Restore masks before rendering so the preview honors them.
+        const restored: MaskMap = new Map();
+        for (const m of project.masks) {
+          restored.set(m.id, m.data);
+          await engine.current!.setMask(
+            m.id,
+            m.data.slice().buffer as ArrayBuffer,
+            m.width,
+            m.height,
+          );
+        }
+        if (restored.size > 0) setMaskMap(restored);
         const result = await engine.current!.importAlignment(
           project.alignmentJson,
         );
@@ -349,6 +366,8 @@ export function App() {
         workScale.current ?? 1,
         engine.current!.version,
         cps ?? [],
+        maskMap,
+        new Map(shots.map((s) => [s.id, { width: s.width, height: s.height }])),
       );
       await saveBlob(
         new Blob([doc], { type: "application/json" }),
@@ -359,7 +378,7 @@ export function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [shots, cps, projectName]);
+  }, [shots, cps, projectName, maskMap]);
 
   const runAlign = useCallback(async () => {
     setError(null);
@@ -474,6 +493,30 @@ export function App() {
     }
   }, [phase.kind, shots, exportWidth, projectName]);
 
+  /** Send changed masks to the engine and re-render the preview. */
+  const applyMasks = useCallback(async () => {
+    try {
+      for (const id of [...dirtyMasks.current]) {
+        const mask = maskMap.get(id);
+        const shot = shots.find((s) => s.id === id);
+        if (!shot) continue;
+        if (!mask || mask.every((v) => v === 0)) {
+          await engine.current!.clearMask(id);
+        } else {
+          // Copy: the buffer transfers to the worker.
+          const buf = mask.slice().buffer as ArrayBuffer;
+          await engine.current!.setMask(id, buf, shot.width, shot.height);
+        }
+        dirtyMasks.current.delete(id);
+      }
+      setPhase({ kind: "previewing" });
+      const p = await engine.current!.renderPreview(4096);
+      setPhase({ kind: "preview", ...p });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [maskMap, shots]);
+
   /** Open the CP editor, generating points on first use. */
   const openCpEditor = useCallback(async () => {
     setError(null);
@@ -536,6 +579,13 @@ export function App() {
       files.current.delete(id);
       setCps(null);
       setCpEditorOpen(false);
+      setMaskEditorOpen(false);
+      setMaskMap((m) => {
+        const next = new Map(m);
+        next.delete(id);
+        return next;
+      });
+      dirtyMasks.current.delete(id);
       setShots((s) => {
         const next = s.filter((shot) => shot.id !== id);
         setPhase(next.length > 0 ? { kind: "loaded" } : { kind: "empty" });
@@ -630,11 +680,24 @@ export function App() {
         {phase.kind === "preview" && (
           <>
             <button
+              className={`align-btn ghost${maskEditorOpen ? " active" : ""}`}
+              disabled={busy}
+              onClick={() => {
+                setCpEditorOpen(false);
+                setMaskEditorOpen((o) => !o);
+              }}
+              title="Paint seam masks — avoid moving clouds/people, prefer a shot"
+            >
+              Mask
+            </button>
+            <button
               className={`align-btn ghost${cpEditorOpen ? " active" : ""}`}
               disabled={busy}
-              onClick={() =>
-                cpEditorOpen ? setCpEditorOpen(false) : void openCpEditor()
-              }
+              onClick={() => {
+                setMaskEditorOpen(false);
+                if (cpEditorOpen) setCpEditorOpen(false);
+                else void openCpEditor();
+              }}
               title="Inspect and edit control points; optimize lens distortion"
             >
               Points
@@ -860,6 +923,27 @@ export function App() {
                 : "rendering preview"}
             </div>
           </div>
+        )}
+
+        {maskEditorOpen && (
+          <MaskEditor
+            shots={shots
+              .filter((s) => !s.dropped)
+              .map((s) => ({
+                id: s.id,
+                fileName: s.fileName,
+                width: s.width,
+                height: s.height,
+              }))}
+            files={files.current}
+            masks={maskMap}
+            onMasksChange={(m, dirtyId) => {
+              setMaskMap(m);
+              dirtyMasks.current.add(dirtyId);
+            }}
+            apply={applyMasks}
+            onClose={() => setMaskEditorOpen(false)}
+          />
         )}
 
         {cpEditorOpen && cps && (

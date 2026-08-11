@@ -33,7 +33,32 @@ export interface PanoloomProject extends Project {
     /** Registration scale the images were decoded at when saved. */
     workScale: number;
     alignment: EngineAlignment;
+    /** Painted seam masks, RLE [value, count, ...] at registration dims. */
+    masks?: { id: number; width: number; height: number; rle: number[] }[];
   };
+}
+
+export function rleEncode(data: Uint8Array): number[] {
+  const out: number[] = [];
+  let i = 0;
+  while (i < data.length) {
+    const v = data[i]!;
+    let n = 1;
+    while (i + n < data.length && data[i + n] === v) n++;
+    out.push(v, n);
+    i += n;
+  }
+  return out;
+}
+
+export function rleDecode(rle: number[], length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  let p = 0;
+  for (let i = 0; i + 1 < rle.length; i += 2) {
+    out.fill(rle[i]!, p, Math.min(length, p + rle[i + 1]!));
+    p += rle[i + 1]!;
+  }
+  return out;
 }
 
 export interface ShotMeta {
@@ -61,6 +86,8 @@ export function buildProject(
   workScale: number,
   engineVersion: string,
   cps: CpLike[] = [],
+  masks: Map<number, Uint8Array> = new Map(),
+  maskDims: Map<number, { width: number; height: number }> = new Map(),
 ): string {
   const alignment = JSON.parse(alignmentJson) as EngineAlignment;
   const byId = new Map(alignment.images.map((ai) => [ai.id, ai]));
@@ -124,6 +151,14 @@ export function buildProject(
       engineVersion,
       workScale,
       alignment,
+      masks: [...masks.entries()]
+        .filter(([, m]) => m.some((v) => v !== 0))
+        .flatMap(([id, m]) => {
+          const dims = maskDims.get(id);
+          return dims
+            ? [{ id, width: dims.width, height: dims.height, rle: rleEncode(m) }]
+            : [];
+        }),
     },
   };
   return JSON.stringify(doc, null, 2);
@@ -136,6 +171,8 @@ export interface ParsedProject {
   workScale: number;
   /** Control points converted to REGISTRATION coordinates. */
   cps: CpLike[];
+  /** Painted seam masks at registration dims. */
+  masks: { id: number; width: number; height: number; data: Uint8Array }[];
 }
 
 export function parseProject(text: string): ParsedProject {
@@ -173,6 +210,12 @@ export function parseProject(text: string): ParsedProject {
       xB: cp.xB * ws,
       yB: cp.yB * ws,
       errorPx: cp.errorPx ?? null,
+    })),
+    masks: (doc.panoloom.masks ?? []).map((m) => ({
+      id: m.id,
+      width: m.width,
+      height: m.height,
+      data: rleDecode(m.rle, m.width * m.height),
     })),
   };
 }

@@ -92,6 +92,24 @@ export class EngineClient {
     if (resp.type !== "oriented") throw new Error("unexpected response");
   }
 
+  /** Painted seam mask (0 none / 1 exclude / 2 prefer, registration dims). */
+  async setMask(
+    id: number,
+    mask: ArrayBuffer,
+    width: number,
+    height: number,
+  ): Promise<void> {
+    const r = await this.send({ type: "setMask", id, mask, width, height }, [
+      mask,
+    ]);
+    if (r.type !== "maskSet") throw new Error("unexpected response");
+  }
+
+  async clearMask(id: number): Promise<void> {
+    const r = await this.send({ type: "clearMask", id });
+    if (r.type !== "maskSet") throw new Error("unexpected response");
+  }
+
   /** Feature-derived control points (registration coords). */
   async autoControlPoints(
     maxPerPair: number,

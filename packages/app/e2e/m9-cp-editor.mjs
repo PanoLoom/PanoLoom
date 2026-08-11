@@ -1,9 +1,11 @@
 // v1.1 e2e: stitch the sample -> open the control-point editor -> auto
 // points appear -> Optimize improves (or keeps) the rms and re-renders.
 // Requires the preview server on :4173.
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage({ viewport: { width: 1200, height: 750 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

@@ -1,6 +1,8 @@
 // M5 e2e: import ring JPEGs -> Align & Preview -> 360 viewer appears.
 // Requires the preview server on :4173 and the local test dataset.
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -20,7 +22,7 @@ const jpegs = readdirSync(setDir)
   .sort()
   .map((f) => path.join(setDir, f));
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

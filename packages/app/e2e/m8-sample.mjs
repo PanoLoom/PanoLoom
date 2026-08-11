@@ -1,8 +1,10 @@
 // M8 e2e: "try a sample set" -> import bundled shots -> align -> viewer.
 // Requires the preview server on :4173 (samples ship in public/).
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

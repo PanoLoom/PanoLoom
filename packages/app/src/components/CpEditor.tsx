@@ -5,6 +5,7 @@
  * CP coordinates are registration-scale pixels (engine convention).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadScaledBitmap } from "../lib/bitmap";
 import type {
   EngineControlPoint,
   OptimizeFlags,
@@ -83,7 +84,7 @@ export function CpEditor({
       if (bitmaps.current.has(id)) continue;
       const file = files.get(id);
       if (!file) continue;
-      void createImageBitmap(file, { resizeWidth: BITMAP_W }).then((bmp) => {
+      void loadScaledBitmap(file, BITMAP_W).then((bmp) => {
         if (dead) return;
         bitmaps.current.set(id, bmp);
         setBitmapTick((t) => t + 1);

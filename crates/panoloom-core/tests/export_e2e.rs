@@ -55,7 +55,14 @@ fn banded_export_ring() {
 
     let alignment = align(&sources).expect("align");
 
-    let mut exporter = Exporter::new(&sources, &alignment, &full_sizes, 16384).expect("exporter");
+    let mut exporter = Exporter::new(
+        &sources,
+        &alignment,
+        &vec![None; alignment.images.len()],
+        &full_sizes,
+        16384,
+    )
+    .expect("exporter");
     let (cw, ch) = exporter.canvas_size();
     let (crop_x, crop_y, crop_w, crop_h) = exporter.crop();
     eprintln!(

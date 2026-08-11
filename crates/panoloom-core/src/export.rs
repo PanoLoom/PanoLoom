@@ -73,6 +73,7 @@ impl Exporter {
     pub fn new(
         reg_sources: &[SourceImage],
         alignment: &Alignment,
+        user_masks: &[Option<&GrayImage>],
         full_sizes: &[(u32, u32, u32)],
         target_width: usize,
     ) -> Result<Self, String> {
@@ -109,7 +110,7 @@ impl Exporter {
         let canvas_h = canvas_w / 2;
 
         // Seam stage (shared with preview): gains + unrolled seams.
-        let stage = seam_stage(&srcs, alignment);
+        let stage = seam_stage(&srcs, alignment, user_masks);
         let seam_masks_dilated: Vec<GrayImage> = stage.e_seam_masks.iter().map(dilate3).collect();
 
         // Compose-scale ROIs per entry. K multiplier for a full-res source:

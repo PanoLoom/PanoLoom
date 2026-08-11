@@ -31,6 +31,23 @@ pub struct Engine {
     sources: Vec<SourceImage>,
     alignment: Option<Alignment>,
     exporter: Option<Exporter>,
+    /// Painted seam masks (registration dims, 0 none / 1 exclude / 2
+    /// prefer), keyed by image id.
+    user_masks: std::collections::HashMap<u32, panoloom_core::imgproc::GrayImage>,
+}
+
+impl Engine {
+    /// User masks ordered like `alignment.images` (None where unset).
+    fn ordered_masks(
+        &self,
+        alignment: &Alignment,
+    ) -> Vec<Option<&panoloom_core::imgproc::GrayImage>> {
+        alignment
+            .images
+            .iter()
+            .map(|ai| self.user_masks.get(&ai.id))
+            .collect()
+    }
 }
 
 /// Finished export: JPEG bytes (the coverage crop) + where that crop sits
@@ -123,6 +140,7 @@ impl Engine {
             sources: Vec::new(),
             alignment: None,
             exporter: None,
+            user_masks: std::collections::HashMap::new(),
         }
     }
 
@@ -149,8 +167,15 @@ impl Engine {
             .zip(&heights)
             .map(|((&i, &w), &h)| (i, w, h))
             .collect();
-        let exporter = Exporter::new(&self.sources, alignment, &full_sizes, target_width as usize)
-            .map_err(|e| JsError::new(&e))?;
+        let masks = self.ordered_masks(alignment);
+        let exporter = Exporter::new(
+            &self.sources,
+            alignment,
+            &masks,
+            &full_sizes,
+            target_width as usize,
+        )
+        .map_err(|e| JsError::new(&e))?;
 
         let (fw, fh) = exporter.canvas_size();
         let (cx, cy, cw, ch) = exporter.crop();
@@ -279,6 +304,7 @@ impl Engine {
 
     pub fn remove_image(&mut self, id: u32) {
         self.sources.retain(|s| s.id != id);
+        self.user_masks.remove(&id);
         self.alignment = None;
         self.exporter = None;
     }
@@ -319,6 +345,52 @@ impl Engine {
         );
         self.alignment = Some(alignment);
         Ok(json)
+    }
+
+    /// Sets a painted seam mask for an image (bytes at REGISTRATION dims:
+    /// 0 = none, 1 = exclude, 2 = prefer). Invalidates a running export.
+    pub fn set_mask(
+        &mut self,
+        id: u32,
+        mask: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), JsError> {
+        let src = self
+            .sources
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| JsError::new("unknown image id"))?;
+        if (width as usize, height as usize) != (src.rgb.width, src.rgb.height) {
+            return Err(JsError::new("mask dimensions must match the image"));
+        }
+        if mask.len() != (width * height) as usize {
+            return Err(JsError::new("mask buffer does not match dimensions"));
+        }
+        if mask.iter().all(|&v| v == 0) {
+            self.user_masks.remove(&id);
+        } else {
+            self.user_masks.insert(
+                id,
+                panoloom_core::imgproc::GrayImage::new(
+                    width as usize,
+                    height as usize,
+                    mask.to_vec(),
+                ),
+            );
+        }
+        self.exporter = None;
+        Ok(())
+    }
+
+    pub fn clear_mask(&mut self, id: u32) {
+        self.user_masks.remove(&id);
+        self.exporter = None;
+    }
+
+    /// Number of images with painted masks (diagnostics).
+    pub fn mask_count(&self) -> u32 {
+        self.user_masks.len() as u32
     }
 
     /// Rotates the whole panorama by a pano-frame rotation (row-major 3x3).
@@ -435,8 +507,13 @@ impl Engine {
                     .rgb
             })
             .collect();
-        let preview =
-            render_preview(&srcs, alignment, max_width as usize).map_err(|e| JsError::new(&e))?;
+        let preview = render_preview(
+            &srcs,
+            alignment,
+            &self.ordered_masks(alignment),
+            max_width as usize,
+        )
+        .map_err(|e| JsError::new(&e))?;
         Ok(PreviewImage {
             width: preview.width as u32,
             height: preview.height as u32,

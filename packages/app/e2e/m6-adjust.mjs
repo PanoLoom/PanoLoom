@@ -1,10 +1,12 @@
 // M6 e2e: the live orientation preview (PSV sphereCorrection) must match
 // the baked orient() result, and removing a shot resets the workflow.
 // Requires the preview server on :4173 (uses the bundled sample).
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 import { PNG } from "pngjs";
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

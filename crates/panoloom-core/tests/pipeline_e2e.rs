@@ -53,7 +53,8 @@ fn pipeline_align_and_preview_ring() {
         .iter()
         .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
         .collect();
-    let preview = render_preview(&srcs, &alignment, 1024).expect("preview");
+    let preview =
+        render_preview(&srcs, &alignment, &vec![None; srcs.len()], 1024).expect("preview");
     assert!(preview.width <= 1024);
     assert_eq!(preview.rgba.len(), preview.width * preview.height * 4);
 

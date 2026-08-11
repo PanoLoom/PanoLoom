@@ -14,6 +14,15 @@ export type WorkerRequest =
   | { type: "align" }
   | { type: "orient"; r: number[] }
   | { type: "autoControlPoints"; maxPerPair: number }
+  | {
+      type: "setMask";
+      id: number;
+      /** One byte per REGISTRATION pixel: 0 none, 1 exclude, 2 prefer. */
+      mask: ArrayBuffer;
+      width: number;
+      height: number;
+    }
+  | { type: "clearMask"; id: number }
   | { type: "optimizeCps"; cps: EngineControlPoint[]; flags: OptimizeFlags }
   | { type: "exportAlignment" }
   | { type: "importAlignment"; alignment: string }
@@ -88,6 +97,7 @@ export type WorkerResponse =
   | { type: "aligned"; result: AlignResult }
   | { type: "oriented" }
   | { type: "controlPoints"; cps: EngineControlPoint[] }
+  | { type: "maskSet"; id: number }
   | { type: "optimized"; report: OptimizeReport }
   | { type: "alignmentExported"; alignment: string }
   | { type: "exportCancelled" }

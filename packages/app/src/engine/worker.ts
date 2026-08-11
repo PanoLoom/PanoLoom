@@ -76,6 +76,16 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         post({ type: "oriented" });
         break;
       }
+      case "setMask": {
+        engine!.set_mask(msg.id, new Uint8Array(msg.mask), msg.width, msg.height);
+        post({ type: "maskSet", id: msg.id });
+        break;
+      }
+      case "clearMask": {
+        engine!.clear_mask(msg.id);
+        post({ type: "maskSet", id: msg.id });
+        break;
+      }
       case "autoControlPoints": {
         const cps = JSON.parse(engine!.auto_control_points(msg.maxPerPair));
         post({ type: "controlPoints", cps });
@@ -105,7 +115,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case "preview": {
         const t0 = performance.now();
         const p = engine!.render_preview(msg.maxWidth);
-        console.log(`[engine] preview: ${(performance.now() - t0).toFixed(0)}ms`);
+        console.log(
+          `[engine] preview: ${(performance.now() - t0).toFixed(0)}ms (${engine!.mask_count()} masks)`,
+        );
         const rgba = p.take_rgba();
         const buf = rgba.buffer as ArrayBuffer;
         post(

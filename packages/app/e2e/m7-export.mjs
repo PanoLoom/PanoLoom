@@ -1,7 +1,9 @@
 // M7 e2e: import JPEGs -> align -> export full-res 360 JPEG with GPano XMP.
 // Requires the preview server on :4173. Usage:
 //   node e2e/m7-export.mjs [setDir] [exportWidth]
-import { chromium } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
+const engine =
+  { chromium, firefox, webkit }[process.env.BROWSER ?? "chromium"] ?? chromium;
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -24,7 +26,7 @@ const jpegs = readdirSync(setDir)
   .sort()
   .map((f) => path.join(setDir, f));
 
-const browser = await chromium.launch();
+const browser = await engine.launch();
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
