@@ -158,6 +158,8 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--orb-features", type=int, default=500,
                     help="ORB nfeatures (500 = cv2.Stitcher default)")
+    ap.add_argument("--dump-full", action="store_true",
+                    help="also dump full-resolution source PNGs (compose-stage parity fixtures; large)")
     args = ap.parse_args()
 
     paths = sorted(p for p in args.images.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
@@ -306,6 +308,11 @@ def main() -> None:
         cv2.imwrite(str(out / "seams" / f"mask_{i:03d}.png"), m)
     print(f"seams: {len(seam_masks)} masks at seam scale")
 
+    if args.dump_full:
+        (out / "full").mkdir(exist_ok=True)
+        for i, im in enumerate(full_imgs):
+            cv2.imwrite(str(out / "full" / f"img_{i:03d}.png"), im)
+
     # --- stage 6: full-res compose with multiband blending ---
     compose_work_aspect = 1.0 / work_scale
     warper = cv2.PyRotationWarper("spherical", warped_image_scale * compose_work_aspect)
@@ -341,6 +348,7 @@ def main() -> None:
     result, result_mask = blender.blend(None, None)
     result = np.clip(np.asarray(result), 0, 255).astype(np.uint8)
     cv2.imwrite(str(out / "result.jpg"), result, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    cv2.imwrite(str(out / "result.png"), result)  # lossless, for parity gates
     print(f"result: {result.shape[1]}x{result.shape[0]} -> {out / 'result.jpg'}")
 
     (out / "compose.json").write_text(json.dumps({

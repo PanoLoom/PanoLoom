@@ -25,6 +25,7 @@ pub mod orb;
 pub mod orb_pattern;
 pub mod project;
 pub mod rng;
+pub mod seam;
 pub mod warp;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
