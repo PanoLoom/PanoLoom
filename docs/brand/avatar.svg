@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- GitHub org/repo avatar: the mark filling the tile (no maskable
+       safe-area padding, unlike icon.svg), heavier strokes so the weave
+       survives the 20px listing size. -->
+  <rect width="512" height="512" fill="#1a1a1d"/>
+  <g transform="translate(256 256) scale(0.92) translate(-256 -256)"
+     fill="none" stroke-linecap="round">
+    <circle cx="256" cy="256" r="142" stroke="#8e8e96" stroke-width="36"/>
+    <path d="M 32 296
+             C 120 296, 152 196, 256 196
+             C 360 196, 392 296, 480 296"
+          stroke="#e8a33d" stroke-width="42"/>
+    <path d="M 373.94 155.99
+             A 142 142 0 0 1 357.41 357.41"
+          stroke="#8e8e96" stroke-width="36"/>
+  </g>
+</svg>
