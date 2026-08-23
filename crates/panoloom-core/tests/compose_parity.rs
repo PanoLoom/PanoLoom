@@ -234,7 +234,9 @@ fn full_res_compose_matches_oracle() {
     let oracle = load_png(&dir.join("result.png"));
     assert_eq!((oracle.width, oracle.height), (roi.2, roi.3), "canvas size");
     let to_gray = |rgb: &[u8]| -> Vec<u8> {
-        rgb.chunks_exact(3)
+        rgb.as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| {
                 ((p[0] as u32 * 4899 + p[1] as u32 * 9617 + p[2] as u32 * 1868 + 8192) >> 14) as u8
             })
