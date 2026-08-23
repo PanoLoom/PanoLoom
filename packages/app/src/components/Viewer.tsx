@@ -36,13 +36,18 @@ export function Viewer({
   const el = useRef<HTMLDivElement>(null);
   const viewer = useRef<PsvViewer | null>(null);
   const [flat] = useState(() => !webglAvailable());
+  // `viewer.current` is assigned at construction but PSV only builds its
+  // renderer on "ready", and setOption("sphereCorrection") dereferences it.
+  // A non-null viewer is therefore NOT enough to call into.
+  const [psvReady, setPsvReady] = useState(false);
 
   useEffect(() => {
+    if (!psvReady) return;
     viewer.current?.setOption(
       "sphereCorrection",
       correction ?? { pan: 0, tilt: 0, roll: 0 },
     );
-  }, [correction]);
+  }, [correction, psvReady]);
 
   // No WebGL: draw the equirect flat (everything else — masks, adjust,
   // export — still works; only the interactive sphere needs GL).
@@ -103,11 +108,13 @@ export function Viewer({
         // Test hook.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__psv = viewer.current;
+        setPsvReady(true);
         onViewer?.(viewer.current);
       },
       { once: true },
     );
     return () => {
+      setPsvReady(false);
       onViewer?.(null);
       viewer.current?.destroy();
       viewer.current = null;

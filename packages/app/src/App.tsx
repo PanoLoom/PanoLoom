@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "@fontsource-variable/archivo";
 import "@fontsource/martian-mono/400.css";
 import { injectGPano } from "@panoloom/metadata";
@@ -760,12 +760,14 @@ export function App() {
   // matrix EQUALING our pano-frame rotation — so the correction is the
   // YXZ Euler decomposition of orientationFor(...). Calibrated against
   // the baked orient() per axis and combined (see M6 e2e).
-  const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
-  const correction: SphereCorrection = {
-    pan: -euler.y,
-    tilt: -euler.x,
-    roll: euler.z,
-  };
+  // Memoised: a fresh object every render would re-fire the viewer's
+  // sphereCorrection effect on every unrelated state change (stage progress
+  // included), which is both wasted work and how the pre-ready PSV crash
+  // surfaced.
+  const correction: SphereCorrection = useMemo(() => {
+    const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
+    return { pan: -euler.y, tilt: -euler.x, roll: euler.z };
+  }, [adjust.yaw, adjust.pitch, adjust.roll]);
 
   return (
     <div className="frame">
