@@ -40,7 +40,9 @@ pub fn rgba_to_gray_cv(rgba: &[u8], width: usize, height: usize) -> GrayImage {
     const G2Y: u32 = 9617;
     const B2Y: u32 = 1868;
     let data = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| {
             let v = R2Y * px[0] as u32 + G2Y * px[1] as u32 + B2Y * px[2] as u32 + (1 << 13);
             (v >> 14) as u8
@@ -55,7 +57,9 @@ pub fn rgb_to_gray_cv(rgb: &[u8], width: usize, height: usize) -> GrayImage {
     const G2Y: u32 = 9617;
     const B2Y: u32 = 1868;
     let data = rgb
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|px| {
             let v = R2Y * px[0] as u32 + G2Y * px[1] as u32 + B2Y * px[2] as u32 + (1 << 13);
             (v >> 14) as u8

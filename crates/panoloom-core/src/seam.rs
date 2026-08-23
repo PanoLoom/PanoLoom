@@ -399,7 +399,9 @@ pub fn find_seams_graph_cut_color(
                 height: im.height,
                 data: im
                     .data
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
                     .collect(),
             }

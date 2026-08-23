@@ -187,7 +187,7 @@ impl BlocksGainCompensator {
             resized = resize_linear_f32(gm, image.width, image.height);
             &resized
         };
-        for (px, &g) in image.data.chunks_exact_mut(3).zip(gain) {
+        for (px, &g) in image.data.as_chunks_mut::<3>().0.iter_mut().zip(gain) {
             for c in px {
                 *c = saturate_u8(*c as f32 * g);
             }
