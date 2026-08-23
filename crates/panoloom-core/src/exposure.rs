@@ -94,6 +94,12 @@ const BLOCK: i32 = 32;
 /// `nr_gain_filtering_iterations_` default.
 const GAIN_FILTERING_ITERATIONS: usize = 2;
 
+/// Largest equation count still solved by the dense `LUImpl` port, which is
+/// what keeps the oracle gain maps bit-exact. The reference dumps need 528
+/// (ring) and 2993 (sphere) equations, so both stay on the dense path;
+/// above this the system goes to `solve_gains_cg`.
+const DENSE_GAIN_MAX_EQ: usize = 3072;
+
 impl BlocksGainCompensator {
     /// `BlocksCompensator::feedWithStrategy<GainCompensator>`
     /// (exposure_compensate.cpp:462-529).
@@ -235,78 +241,284 @@ fn pix_norm(p: &[u8]) -> f64 {
     (c0 * c0 + c1 * c1 + c2 * c2).sqrt()
 }
 
+/// A neighbour in the block-overlap graph: OpenCV's dense `N`/`I` matrices
+/// restricted to the pairs whose rectangles actually intersect. Every other
+/// entry of those matrices is a structural zero, and a structural zero
+/// contributes `+= 0.0` to the normal equations — exact in f64 — so dropping
+/// it leaves every accumulated value bit-identical.
+#[derive(Clone, Copy)]
+struct Nbr {
+    j: u32,
+    nij: i32,
+    /// `I[i][j]`: mean intensity of block `i` over the `i`–`j` overlap.
+    iij: f64,
+    /// `I[j][i]`.
+    iji: f64,
+}
+
+/// Compressed sparse row; columns ascending within each row.
+struct Csr {
+    row_ptr: Vec<usize>,
+    col: Vec<u32>,
+    val: Vec<f64>,
+}
+
+impl Csr {
+    fn mul_into(&self, x: &[f64], out: &mut [f64]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            let mut s = 0f64;
+            for k in self.row_ptr[i]..self.row_ptr[i + 1] {
+                s += self.val[k] * x[self.col[k] as usize];
+            }
+            *o = s;
+        }
+    }
+}
+
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Every pair `(i, j)`, `i <= j`, whose block rectangles intersect.
+///
+/// OpenCV scans all n² pairs; at 137 images that is 1.1e8 rectangle tests to
+/// find ~0.1% hits. A uniform grid sized to the largest block returns the
+/// same pair set exactly — two rectangles that intersect must share at least
+/// one cell — in time proportional to the number of hits.
+fn overlapping_pairs(images: &[BlockView]) -> Vec<(usize, usize)> {
+    let n = images.len();
+    let mut cell = 1i64;
+    let (mut min_x, mut min_y) = (i64::MAX, i64::MAX);
+    let (mut max_x, mut max_y) = (i64::MIN, i64::MIN);
+    for b in images {
+        cell = cell.max(b.width as i64).max(b.height as i64);
+        min_x = min_x.min(i64::from(b.corner.0));
+        min_y = min_y.min(i64::from(b.corner.1));
+        max_x = max_x.max(i64::from(b.corner.0) + b.width as i64);
+        max_y = max_y.max(i64::from(b.corner.1) + b.height as i64);
+    }
+    let gw = ((max_x - min_x) / cell + 1) as usize;
+    let gh = ((max_y - min_y) / cell + 1) as usize;
+    // Every block spans at most 2x2 cells, so each lands in at most 4 buckets.
+    let span = |b: &BlockView| {
+        let cx0 = ((i64::from(b.corner.0) - min_x) / cell) as usize;
+        let cy0 = ((i64::from(b.corner.1) - min_y) / cell) as usize;
+        let cx1 = ((i64::from(b.corner.0) + b.width as i64 - 1 - min_x) / cell) as usize;
+        let cy1 = ((i64::from(b.corner.1) + b.height as i64 - 1 - min_y) / cell) as usize;
+        (cx0, cy0, cx1, cy1)
+    };
+
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); gw * gh];
+    for (i, b) in images.iter().enumerate() {
+        let (cx0, cy0, cx1, cy1) = span(b);
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                buckets[cy * gw + cx].push(i as u32);
+            }
+        }
+    }
+
+    let mut pairs = Vec::new();
+    let mut seen = vec![u32::MAX; n];
+    for (i, b1) in images.iter().enumerate() {
+        let (cx0, cy0, cx1, cy1) = span(b1);
+        let start = pairs.len();
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                for &jj in &buckets[cy * gw + cx] {
+                    let j = jj as usize;
+                    if j < i || seen[j] == i as u32 {
+                        continue;
+                    }
+                    seen[j] = i as u32;
+                    let b2 = &images[j];
+                    if overlap_roi(
+                        b1.corner,
+                        (b1.width as i32, b1.height as i32),
+                        b2.corner,
+                        (b2.width as i32, b2.height as i32),
+                    )
+                    .is_some()
+                    {
+                        pairs.push((i, j));
+                    }
+                }
+            }
+        }
+        pairs[start..].sort_unstable();
+    }
+    pairs
+}
+
+/// Jacobi-preconditioned conjugate gradient for the gain normal equations,
+/// the large-system alternative to the dense `lu_solve` below.
+///
+/// `A` is symmetric — `N` is symmetric and the off-diagonal term is
+/// `-2·alpha·I_ij·I_ji·N_ij`, identical either way round — and diagonally
+/// dominant, because only the diagonal collects `beta·N_ij` (beta = 100).
+/// That makes CG well conditioned here, and it touches only the ~20
+/// non-zeros per row instead of the full n² matrix.
+///
+/// Writes the solution into `b`. Returns false when the diagonal is not
+/// positive or the iteration stalls, so the caller can fall back to
+/// OpenCV's zero-fill for a singular system.
+fn solve_gains_cg(a: &Csr, b: &mut [f64]) -> bool {
+    let n = b.len();
+    let mut minv = vec![0f64; n];
+    for (i, mi) in minv.iter_mut().enumerate() {
+        let mut d = 0f64;
+        for k in a.row_ptr[i]..a.row_ptr[i + 1] {
+            if a.col[k] as usize == i {
+                d = a.val[k];
+                break;
+            }
+        }
+        if d.is_nan() || d <= 0.0 {
+            return false;
+        }
+        *mi = 1.0 / d;
+    }
+
+    let rhs = b.to_vec();
+    let bnorm = dot(&rhs, &rhs).sqrt();
+    if bnorm == 0.0 {
+        b.fill(0.0);
+        return true;
+    }
+    let tol = 1e-14 * bnorm;
+
+    let mut x = vec![0f64; n];
+    let mut r = rhs;
+    let mut z: Vec<f64> = r.iter().zip(&minv).map(|(ri, mi)| ri * mi).collect();
+    let mut p = z.clone();
+    let mut rz = dot(&r, &z);
+    let mut ap = vec![0f64; n];
+
+    // CG's exact-arithmetic bound is n steps; this system converges in far
+    // fewer, and the cap only guards a degenerate matrix.
+    for _ in 0..n.max(200) {
+        a.mul_into(&p, &mut ap);
+        let pap = dot(&p, &ap);
+        if pap.is_nan() || pap <= 0.0 {
+            return false;
+        }
+        let step = rz / pap;
+        for i in 0..n {
+            x[i] += step * p[i];
+            r[i] -= step * ap[i];
+        }
+        if dot(&r, &r).sqrt() <= tol {
+            b.copy_from_slice(&x);
+            return true;
+        }
+        for i in 0..n {
+            z[i] = r[i] * minv[i];
+        }
+        let rz_next = dot(&r, &z);
+        let beta = rz_next / rz;
+        for i in 0..n {
+            p[i] = z[i] + beta * p[i];
+        }
+        rz = rz_next;
+    }
+    false
+}
+
 /// `GainCompensator::feed`/`singleFeed` for the Stitcher defaults
 /// (`nr_feeds = 1`, similarity mask disabled, `update_gain = true`), over
 /// block pseudo-images. Returns one f64 gain per input, 1.0 for inputs that
 /// intersect no other input ("skipped" in OpenCV).
+///
+/// OpenCV holds `N` and `I` as dense n x n Mats and solves the normal
+/// equations with a dense `DECOMP_LU`. At 137 images that is 14,796 blocks:
+/// 4.1 GB of matrices that measure 0.13% non-zero, and a 1.1e12-flop solve.
+/// Both are stored and solved sparsely here. The assembly is bit-identical
+/// either way — the entries the dense loop visits and this one skips
+/// contribute exactly `+= 0.0` — so only the solver differs, and only above
+/// [`DENSE_GAIN_MAX_EQ`].
 fn gain_compensator_feed(images: &[BlockView]) -> Vec<f64> {
     let n = images.len();
     if n == 0 {
         return Vec::new();
     }
 
-    // Dense N (i32) and I (f64) matrices, exactly like OpenCV's Mat_<int> /
-    // Mat_<double>. For a full panorama at seam scale this is a few hundred
-    // MB, matching the reference implementation's footprint.
-    let mut nmat = vec![0i32; n * n];
-    let mut imat = vec![0f64; n * n];
-    let mut skip = vec![true; n];
-
-    for i in 0..n {
+    // Per-pair overlap statistics. Each pair is independent, so this fans
+    // out; the values are unchanged by the order they are computed in.
+    let pairs = overlapping_pairs(images);
+    let measured = crate::par::map(&pairs, |&(i, j)| {
         let b1 = &images[i];
-        for j in i..n {
-            let b2 = &images[j];
-            let Some((rx, ry, rw, rh)) = overlap_roi(
-                b1.corner,
-                (b1.width as i32, b1.height as i32),
-                b2.corner,
-                (b2.width as i32, b2.height as i32),
-            ) else {
-                continue;
-            };
-            let (rw, rh) = (rw as usize, rh as usize);
-            // ROI in parent-image coordinates for each side.
-            let l1x = (rx - b1.corner.0) as usize + b1.x0;
-            let l1y = (ry - b1.corner.1) as usize + b1.y0;
-            let l2x = (rx - b2.corner.0) as usize + b2.x0;
-            let l2y = (ry - b2.corner.1) as usize + b2.y0;
+        let b2 = &images[j];
+        let (rx, ry, rw, rh) = overlap_roi(
+            b1.corner,
+            (b1.width as i32, b1.height as i32),
+            b2.corner,
+            (b2.width as i32, b2.height as i32),
+        )
+        .expect("overlapping_pairs only yields intersecting rectangles");
+        let (rw, rh) = (rw as usize, rh as usize);
+        // ROI in parent-image coordinates for each side.
+        let l1x = (rx - b1.corner.0) as usize + b1.x0;
+        let l1y = (ry - b1.corner.1) as usize + b1.y0;
+        let l2x = (rx - b2.corner.0) as usize + b2.x0;
+        let l2y = (ry - b2.corner.1) as usize + b2.y0;
 
-            // intersect = (mask1 == 255) & (mask2 == 255); count and the two
-            // intensity sums accumulate in the same row-major order OpenCV
-            // scans, so all values are bit-identical.
-            let mut intersect_count = 0usize;
-            let mut isum1 = 0f64;
-            let mut isum2 = 0f64;
-            for y in 0..rh {
-                let m1 = &b1.mask.row(l1y + y)[l1x..l1x + rw];
-                let m2 = &b2.mask.row(l2y + y)[l2x..l2x + rw];
-                let r1 = &b1.img.row(l1y + y)[l1x * 3..(l1x + rw) * 3];
-                let r2 = &b2.img.row(l2y + y)[l2x * 3..(l2x + rw) * 3];
-                for x in 0..rw {
-                    if m1[x] == 255 && m2[x] == 255 {
-                        intersect_count += 1;
-                        isum1 += pix_norm(&r1[x * 3..x * 3 + 3]);
-                        isum2 += pix_norm(&r2[x * 3..x * 3 + 3]);
-                    }
+        // intersect = (mask1 == 255) & (mask2 == 255); count and the two
+        // intensity sums accumulate in the same row-major order OpenCV
+        // scans, so all values are bit-identical.
+        let mut intersect_count = 0usize;
+        let mut isum1 = 0f64;
+        let mut isum2 = 0f64;
+        for y in 0..rh {
+            let m1 = &b1.mask.row(l1y + y)[l1x..l1x + rw];
+            let m2 = &b2.mask.row(l2y + y)[l2x..l2x + rw];
+            let r1 = &b1.img.row(l1y + y)[l1x * 3..(l1x + rw) * 3];
+            let r2 = &b2.img.row(l2y + y)[l2x * 3..(l2x + rw) * 3];
+            for x in 0..rw {
+                if m1[x] == 255 && m2[x] == 255 {
+                    intersect_count += 1;
+                    isum1 += pix_norm(&r1[x * 3..x * 3 + 3]);
+                    isum2 += pix_norm(&r2[x * 3..x * 3 + 3]);
                 }
             }
+        }
+        (intersect_count, isum1, isum2)
+    });
 
-            let nij = intersect_count.max(1) as i32;
-            nmat[i * n + j] = nij;
-            nmat[j * n + i] = nij;
-
-            // Don't compute means if the subimages do not intersect anyway.
-            if intersect_count == 0 {
-                continue;
-            }
+    let mut nbrs: Vec<Vec<Nbr>> = vec![Vec::new(); n];
+    let mut skip = vec![true; n];
+    for (&(i, j), &(count, isum1, isum2)) in pairs.iter().zip(&measured) {
+        let nij = count.max(1) as i32;
+        // OpenCV records N even for a zero mask intersection (as max(count,1))
+        // but leaves I at zero and does not clear `skip`.
+        let (iij, iji) = if count == 0 {
+            (0f64, 0f64)
+        } else {
             // Don't skip images that intersect at least one other image.
             if i != j {
                 skip[i] = false;
                 skip[j] = false;
             }
-            imat[i * n + j] = isum1 / nij as f64;
-            imat[j * n + i] = isum2 / nij as f64;
+            (isum1 / f64::from(nij), isum2 / f64::from(nij))
+        };
+        nbrs[i].push(Nbr {
+            j: j as u32,
+            nij,
+            iij,
+            iji,
+        });
+        if i != j {
+            nbrs[j].push(Nbr {
+                j: i as u32,
+                nij,
+                iij: iji,
+                iji: iij,
+            });
         }
+    }
+    // Ascending column order is what makes the assembly below match the
+    // dense loop's accumulation order term for term.
+    for row in nbrs.iter_mut() {
+        row.sort_unstable_by_key(|e| e.j);
     }
 
     // Least squares on the gains: error
@@ -320,34 +532,74 @@ fn gain_compensator_feed(images: &[BlockView]) -> Vec<f64> {
         return gains;
     }
 
-    let mut a = vec![0f64; num_eq * num_eq];
+    let mut eq_of = vec![u32::MAX; n];
+    let mut next_eq = 0u32;
+    for i in 0..n {
+        if !skip[i] {
+            eq_of[i] = next_eq;
+            next_eq += 1;
+        }
+    }
+
+    let mut row_ptr = Vec::with_capacity(num_eq + 1);
+    let mut col: Vec<u32> = Vec::new();
+    let mut val: Vec<f64> = Vec::new();
     let mut b = vec![0f64; num_eq];
-    let mut ki = 0usize;
+    let mut offs: Vec<(u32, f64)> = Vec::new();
+    row_ptr.push(0usize);
     for i in 0..n {
         if skip[i] {
             continue;
         }
-        let mut kj = 0usize;
-        for j in 0..n {
+        let ki = eq_of[i] as usize;
+        let mut diag = 0f64;
+        offs.clear();
+        for nb in &nbrs[i] {
+            let j = nb.j as usize;
             if skip[j] {
                 continue;
             }
-            let nij = nmat[i * n + j];
-            b[ki] += beta * nij as f64;
-            a[ki * num_eq + ki] += beta * nij as f64;
+            let nij = f64::from(nb.nij);
+            b[ki] += beta * nij;
+            diag += beta * nij;
             if j != i {
-                let iij = imat[i * n + j];
-                let iji = imat[j * n + i];
-                a[ki * num_eq + ki] += 2.0 * alpha * iij * iij * nij as f64;
-                a[ki * num_eq + kj] -= 2.0 * alpha * iij * iji * nij as f64;
+                diag += 2.0 * alpha * nb.iij * nb.iij * nij;
+                // `0.0 -` rather than a negation, so a zero term keeps the
+                // dense `a[ki][kj] -= 0.0` sign.
+                offs.push((eq_of[j], 0.0 - 2.0 * alpha * nb.iij * nb.iji * nij));
             }
-            kj += 1;
         }
-        ki += 1;
+        // `eq_of` is monotonic, so `offs` is already ascending; splice the
+        // diagonal into place to keep the row sorted.
+        let cut = offs.partition_point(|&(c, _)| (c as usize) < ki);
+        for &(c, v) in &offs[..cut] {
+            col.push(c);
+            val.push(v);
+        }
+        col.push(ki as u32);
+        val.push(diag);
+        for &(c, v) in &offs[cut..] {
+            col.push(c);
+            val.push(v);
+        }
+        row_ptr.push(col.len());
     }
 
-    // cv::solve(A, b, l_gains) — DECOMP_LU; zero-fills on a singular system.
-    if !lu_solve(&mut a, num_eq, &mut b) {
+    let solved = if num_eq <= DENSE_GAIN_MAX_EQ {
+        // cv::solve(A, b, l_gains) — DECOMP_LU, on the scattered dense
+        // matrix. This is the path the oracle gain fixtures are pinned to.
+        let mut dense = vec![0f64; num_eq * num_eq];
+        for i in 0..num_eq {
+            for k in row_ptr[i]..row_ptr[i + 1] {
+                dense[i * num_eq + col[k] as usize] = val[k];
+            }
+        }
+        lu_solve(&mut dense, num_eq, &mut b)
+    } else {
+        solve_gains_cg(&Csr { row_ptr, col, val }, &mut b)
+    };
+    // OpenCV zero-fills on a singular system.
+    if !solved {
         b.fill(0.0);
     }
 
@@ -547,6 +799,112 @@ mod tests {
         assert_eq!(border_reflect_101(-1, 1), 0);
         assert_eq!(border_reflect_101(1, 2), 1);
         assert_eq!(border_reflect_101(2, 2), 0);
+    }
+
+    /// The CG path must reach the same solution as the dense `DECOMP_LU`
+    /// port it replaces above `DENSE_GAIN_MAX_EQ`, on a system shaped like
+    /// the real one: strong positive diagonal, symmetric negative
+    /// off-diagonals, ~20 non-zeros per row.
+    #[test]
+    fn cg_matches_dense_lu_on_a_gain_like_system() {
+        const N: usize = 300;
+        let mut seed = 0x1234_5678u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f64::from(seed >> 8) / f64::from(1u32 << 24)
+        };
+
+        // Symmetric off-diagonal couplings to ~10 neighbours either side.
+        let mut dense = vec![0f64; N * N];
+        for i in 0..N {
+            for d in 1..=10usize {
+                let j = (i + d) % N;
+                if j <= i {
+                    continue;
+                }
+                let v = -0.5 * rnd();
+                dense[i * N + j] = v;
+                dense[j * N + i] = v;
+            }
+        }
+        // Diagonal dominant, as beta*N_ij makes the real one.
+        for i in 0..N {
+            let off: f64 = (0..N)
+                .filter(|&j| j != i)
+                .map(|j| dense[i * N + j].abs())
+                .sum();
+            dense[i * N + i] = off + 1.0 + rnd();
+        }
+        let rhs: Vec<f64> = (0..N).map(|_| rnd()).collect();
+
+        // Dense LU reference.
+        let mut a_lu = dense.clone();
+        let mut x_lu = rhs.clone();
+        assert!(lu_solve(&mut a_lu, N, &mut x_lu));
+
+        // Same system as CSR, through CG.
+        let mut row_ptr = vec![0usize];
+        let mut col = Vec::new();
+        let mut val = Vec::new();
+        for i in 0..N {
+            for j in 0..N {
+                let v = dense[i * N + j];
+                if v != 0.0 {
+                    col.push(j as u32);
+                    val.push(v);
+                }
+            }
+            row_ptr.push(col.len());
+        }
+        let mut x_cg = rhs.clone();
+        assert!(solve_gains_cg(&Csr { row_ptr, col, val }, &mut x_cg));
+
+        for (i, (l, c)) in x_lu.iter().zip(&x_cg).enumerate() {
+            assert!((l - c).abs() < 1e-10, "x[{i}]: LU {l} vs CG {c}");
+        }
+    }
+
+    /// The uniform grid must find exactly the pairs the O(n^2) scan does.
+    #[test]
+    fn overlapping_pairs_matches_exhaustive_scan() {
+        let img = RgbImage::new(8, 8, vec![0u8; 8 * 8 * 3]);
+        let mask = GrayImage::new(8, 8, vec![255u8; 8 * 8]);
+        let mut seed = 0xfeed_1234u32;
+        let mut rnd = |m: i32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((seed >> 8) % m as u32) as i32
+        };
+        let blocks: Vec<BlockView> = (0..200)
+            .map(|_| BlockView {
+                corner: (rnd(40) - 20, rnd(40) - 20),
+                width: 1 + rnd(6) as usize,
+                height: 1 + rnd(6) as usize,
+                x0: 0,
+                y0: 0,
+                img: &img,
+                mask: &mask,
+            })
+            .collect();
+
+        let mut exhaustive = Vec::new();
+        for i in 0..blocks.len() {
+            for j in i..blocks.len() {
+                let (b1, b2) = (&blocks[i], &blocks[j]);
+                if overlap_roi(
+                    b1.corner,
+                    (b1.width as i32, b1.height as i32),
+                    b2.corner,
+                    (b2.width as i32, b2.height as i32),
+                )
+                .is_some()
+                {
+                    exhaustive.push((i, j));
+                }
+            }
+        }
+        let mut got = overlapping_pairs(&blocks);
+        got.sort_unstable();
+        assert_eq!(got, exhaustive);
     }
 
     #[test]

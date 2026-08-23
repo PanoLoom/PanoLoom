@@ -613,3 +613,66 @@ fn bundle_adjust_matches_cameras_ba_ring() {
 fn bundle_adjust_matches_cameras_ba_sphere() {
     run_bundle_parity("sphere_kloppenheim_06");
 }
+
+/// `solve_ldlt` has no OpenCV counterpart — it is the large-system
+/// alternative to `DECOMP_SVD` that `LevMarq::step` takes above
+/// `LDLT_MIN_PARAMS` — so there is no fixture to check it against. Pin it to
+/// `solve_svd` on a well-conditioned SPD system instead, and pin the
+/// rank-deficiency signal that drives the fallback.
+#[test]
+fn solve_ldlt_agrees_with_svd_and_declines_singular() {
+    const N: usize = 40;
+
+    // Deterministic pseudo-random M, then A = MᵀM + N·I (symmetric, PD).
+    let mut seed = 0x9e37_79b9u32;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(seed >> 8) / f64::from(1u32 << 24) - 0.5
+    };
+    let m: Vec<f64> = (0..N * N).map(|_| rnd()).collect();
+    let mut a = vec![0.0f64; N * N];
+    for i in 0..N {
+        for j in 0..N {
+            let mut s = 0.0;
+            for k in 0..N {
+                s += m[k * N + i] * m[k * N + j];
+            }
+            a[i * N + j] = s;
+        }
+        a[i * N + i] += N as f64;
+    }
+    let b: Vec<f64> = (0..N).map(|_| rnd()).collect();
+
+    let mut x_ldlt = vec![0.0f64; N];
+    assert!(
+        cvnum::solve_ldlt(&a, &b, &mut x_ldlt, N),
+        "SPD system declined"
+    );
+    let mut x_svd = vec![0.0f64; N];
+    cvnum::solve_svd(&a, &b, &mut x_svd, N);
+    for (i, (l, s)) in x_ldlt.iter().zip(&x_svd).enumerate() {
+        assert!((l - s).abs() < 1e-10, "x[{i}]: LDL^T {l} vs SVD {s}");
+    }
+
+    // Residual A·x - b must vanish.
+    for i in 0..N {
+        let mut r = -b[i];
+        for k in 0..N {
+            r += a[i * N + k] * x_ldlt[k];
+        }
+        assert!(r.abs() < 1e-9, "row {i} residual {r}");
+    }
+
+    // Rank-deficient (column N-1 duplicates column 0, as the ray cost's
+    // gauge freedom makes JtJ) must be declined, not silently solved.
+    let mut sing = a.clone();
+    for k in 0..N {
+        sing[(N - 1) * N + k] = sing[k];
+        sing[k * N + (N - 1)] = sing[k * N];
+    }
+    let mut x = vec![0.0f64; N];
+    assert!(
+        !cvnum::solve_ldlt(&sing, &b, &mut x, N),
+        "singular system was not declined"
+    );
+}
