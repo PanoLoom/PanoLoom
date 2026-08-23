@@ -29,6 +29,7 @@ pub mod orb;
 pub mod orb_pattern;
 pub(crate) mod par;
 pub mod pipeline;
+pub mod progress;
 pub mod project;
 pub mod rng;
 pub mod seam;

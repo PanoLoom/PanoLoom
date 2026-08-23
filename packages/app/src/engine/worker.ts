@@ -34,6 +34,7 @@ async function boot(maxThreads?: number): Promise<{ version: string; threads: nu
       );
       await mod.initThreadPool(threads);
       engine = new mod.Engine() as unknown as Engine;
+      reportStages(engine);
       return { version: mod.engine_version(), threads };
     } catch (err) {
       console.warn("mt engine failed to start, using single-thread:", err);
@@ -44,7 +45,14 @@ async function boot(maxThreads?: number): Promise<{ version: string; threads: nu
   const wasmUrl = (await import("./pkg/panoloom_bg.wasm?url")).default;
   await mod.default({ module_or_path: wasmUrl });
   engine = new mod.Engine();
+  reportStages(engine);
   return { version: mod.engine_version(), threads: 0 };
+}
+
+/** Engine stage labels stream out as they start, so a multi-minute align or
+ *  preview reads as progress rather than a hang. */
+function reportStages(e: Engine) {
+  e.set_progress_callback((stage: string) => post({ type: "progress", stage }));
 }
 
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {

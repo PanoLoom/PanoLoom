@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "@fontsource-variable/archivo";
 import "@fontsource/martian-mono/400.css";
 import { injectGPano } from "@panoloom/metadata";
@@ -94,6 +94,21 @@ async function saveBlob(
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+/** Engine stage labels (pipeline.rs `stage_timed!`) in the user's terms.
+ *  Unknown labels fall through verbatim, so a new engine stage still shows
+ *  something rather than nothing. */
+const STAGE_LABELS: Record<string, string> = {
+  "orb-detect": "finding features",
+  "match-pairs": "matching shots",
+  estimate: "estimating camera positions",
+  "bundle-adjust": "refining alignment",
+  "seam-stage": "planning seams",
+  "graph-cut-seams": "cutting seams",
+  "compose-warp": "warping",
+  "blend-feed": "preparing blend",
+  blend: "blending",
+};
+
 const saveJpeg = (bytes: Uint8Array, name: string) =>
   saveBlob(
     new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" }),
@@ -145,6 +160,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [stage, setStage] = useState<string | null>(null);
 
   /** Replace a crashed engine and re-import the retained files. Kept in a
    *  ref so the client's onFatal hook always calls the latest version. */
@@ -158,6 +174,7 @@ export function App() {
     const c = new EngineClient();
     engine.current = c;
     c.onFatal = () => recoverEngine.current();
+    c.onProgress = (s) => setStage(s);
     // ?threads=N caps the pool (diagnostics / constrained machines).
     const raw = new URLSearchParams(location.search).get("threads");
     const cap = raw === null ? undefined : Number(raw);
@@ -728,6 +745,12 @@ export function App() {
     phase.kind === "aligning" ||
     phase.kind === "previewing" ||
     exporting.kind !== "idle";
+
+  // Drop the stage label as soon as the work ends, so a stale one never
+  // lingers under the next spinner.
+  useEffect(() => {
+    if (!busy) setStage(null);
+  }, [busy]);
   const canAlign = ready && shots.length >= 2 && !busy;
   const canExport = ready && phase.kind === "preview" && !busy;
   const adjustDirty =
@@ -737,12 +760,14 @@ export function App() {
   // matrix EQUALING our pano-frame rotation — so the correction is the
   // YXZ Euler decomposition of orientationFor(...). Calibrated against
   // the baked orient() per axis and combined (see M6 e2e).
-  const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
-  const correction: SphereCorrection = {
-    pan: -euler.y,
-    tilt: -euler.x,
-    roll: euler.z,
-  };
+  // Memoised: a fresh object every render would re-fire the viewer's
+  // sphereCorrection effect on every unrelated state change (stage progress
+  // included), which is both wasted work and how the pre-ready PSV crash
+  // surfaced.
+  const correction: SphereCorrection = useMemo(() => {
+    const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
+    return { pan: -euler.y, tilt: -euler.x, roll: euler.z };
+  }, [adjust.yaw, adjust.pitch, adjust.roll]);
 
   return (
     <div className="frame">
@@ -1063,9 +1088,11 @@ export function App() {
         {busy && (
           <div className="working">
             <div className="step">
-              {phase.kind === "aligning"
-                ? "weaving · features → matches → bundle adjustment"
-                : "rendering preview"}
+              {stage
+                ? `weaving · ${STAGE_LABELS[stage] ?? stage}`
+                : phase.kind === "aligning"
+                  ? "weaving · features → matches → bundle adjustment"
+                  : "rendering preview"}
             </div>
           </div>
         )}

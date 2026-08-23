@@ -62,10 +62,12 @@ pub struct Alignment {
     pub lens: crate::lens::LensParams,
 }
 
-/// Native-only stage timing (Instant is unavailable on wasm32-unknown-
-/// unknown): prints stage durations to stderr when PANOLOOM_TIMING is set.
+/// Announces the stage to any installed [`crate::progress`] hook, then runs
+/// it. Natively it also prints the duration to stderr when PANOLOOM_TIMING is
+/// set (`Instant` is unavailable on wasm32-unknown-unknown).
 macro_rules! stage_timed {
     ($label:expr, $body:expr) => {{
+        crate::progress::stage($label);
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
         let out = $body;

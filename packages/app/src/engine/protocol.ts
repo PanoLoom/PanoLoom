@@ -121,4 +121,5 @@ export type WorkerResponse =
       fullWidth: number;
       fullHeight: number;
     }
+  | { type: "progress"; stage: string }
   | { type: "error"; op: WorkerRequest["type"]; message: string };

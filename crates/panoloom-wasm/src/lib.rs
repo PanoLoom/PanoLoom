@@ -34,9 +34,24 @@ pub struct Engine {
     /// Painted seam masks (registration dims, 0 none / 1 exclude / 2
     /// prefer), keyed by image id.
     user_masks: std::collections::HashMap<u32, panoloom_core::imgproc::GrayImage>,
+    /// Called with a stage label whenever a long call enters a new stage.
+    progress: Option<js_sys::Function>,
 }
 
 impl Engine {
+    /// Forwards engine stage labels to `self.progress` for as long as the
+    /// guard lives. `align` and `preview` run for minutes on large sets, so
+    /// without this the UI cannot distinguish slow from hung.
+    fn report_progress(&self) -> Option<panoloom_core::progress::Guard> {
+        let cb = self.progress.clone()?;
+        Some(panoloom_core::progress::scoped(Box::new(
+            move |stage: &str| {
+                // A throwing or detached callback must not abort the stitch.
+                let _ = cb.call1(&JsValue::NULL, &JsValue::from_str(stage));
+            },
+        )))
+    }
+
     /// User masks ordered like `alignment.images` (None where unset).
     fn ordered_masks(
         &self,
@@ -141,6 +156,7 @@ impl Engine {
             alignment: None,
             exporter: None,
             user_masks: std::collections::HashMap::new(),
+            progress: None,
         }
     }
 
@@ -321,7 +337,14 @@ impl Engine {
 
     /// Runs full registration. Returns JSON:
     /// `{"aligned":[...],"rescued":[...],"dropped":[...],"warpedImageScale":f}`.
+    /// Installs a `(stage: string) => void` callback invoked as `align` and
+    /// `preview` move between stages. Pass `None` to clear it.
+    pub fn set_progress_callback(&mut self, cb: Option<js_sys::Function>) {
+        self.progress = cb;
+    }
+
     pub fn align(&mut self) -> Result<String, JsError> {
+        let _progress = self.report_progress();
         let alignment = align(&self.sources).map_err(|e| JsError::new(&e))?;
         let aligned: Vec<String> = alignment
             .images
@@ -491,6 +514,7 @@ impl Engine {
     /// Renders the blended preview as a full equirectangular RGBA canvas.
     /// Requires a prior successful `align()`.
     pub fn render_preview(&self, max_width: u32) -> Result<PreviewImage, JsError> {
+        let _progress = self.report_progress();
         let alignment = self
             .alignment
             .as_ref()
