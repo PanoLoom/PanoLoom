@@ -16,7 +16,9 @@ fn load_png(path: &std::path::Path) -> PixelImage {
     let rgb = match info.color_type {
         png::ColorType::Rgb => buf,
         png::ColorType::Rgba => buf
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect(),
         other => panic!("unsupported color type {other:?}"),

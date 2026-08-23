@@ -47,6 +47,16 @@ pub const CONF_THRESH: f64 = 1.0;
 const NUM_PARAMS_PER_CAM: usize = 4;
 const NUM_ERRS_PER_MEASUREMENT: usize = 3;
 
+/// Parameter count above which `LevMarq::step` leaves OpenCV's `DECOMP_SVD`
+/// for an LDL^T solve (see [`LevMarq::step`]). 160 params = 40 cameras; the
+/// BA oracle-parity dumps top out at 26 cameras (104 params), so they stay
+/// on the reference path and stay bit-exact.
+const LDLT_MIN_PARAMS: usize = 160;
+
+/// Relative ridge added to the damped diagonal on the LDL^T path only, to
+/// lift the ray cost's 3 gauge directions out of rounding noise.
+const GAUGE_RIDGE_REL: f64 = 1e-9;
+
 /// Verbatim ports of the OpenCV numeric kernels the bundle adjuster runs on.
 /// Public so the parity tests can validate each primitive against cv2
 /// fixtures; not part of the crate's stable API.
@@ -224,18 +234,21 @@ pub mod cvnum {
         debug_assert_eq!(out.len(), cols * cols);
         let single = (cols <= 64 && rows <= 10000) || rows <= 10 || (cols <= 128 && rows <= 128);
         let kj = !single || (cols >= 4 && rows >= 64);
-        let mut a_col = vec![0.0f64; rows];
-        for i in 0..cols {
+        // Output row `i` depends only on `j`, so the rows fan out. Each row
+        // still runs the identical scalar FMA stream, which keeps the result
+        // bit-for-bit equal to the serial form (and to the no-`parallel`
+        // build) — same guarantee the `par` helpers carry elsewhere.
+        crate::par::for_each_chunk_mut(out, cols, |i, out_row| {
+            let mut a_col = vec![0.0f64; rows];
             for (k, a) in a_col.iter_mut().enumerate() {
                 *a = j[k * cols + i];
             }
-            let out_row = &mut out[i * cols..(i + 1) * cols];
             if kj {
                 kj_row(&a_col, j, rows, cols, out_row);
             } else {
                 fourcol_row(&a_col, j, rows, cols, out_row);
             }
-        }
+        });
     }
 
     /// `simdDotProduct` for doubles: stride-8 loop into four 2-lane FMA
@@ -933,6 +946,80 @@ pub mod cvnum {
         svbksb(n, n, &w, &at, &vt, b, x);
     }
 
+    /// Solve the symmetric system `a x = b` by LDL^T — Cholesky without
+    /// square roots — as the large-system alternative to [`solve_svd`].
+    ///
+    /// This has no OpenCV counterpart: `DECOMP_SVD` above is a one-sided
+    /// Jacobi SVD costing ~n^3 per sweep with the sweep cap itself growing
+    /// as n, paid on every LM step. LDL^T is one O(n^3/3) factorisation.
+    ///
+    /// Returns false — leaving `x` untouched — when the matrix is not
+    /// numerically definite, so the caller can fall back to the SVD
+    /// pseudo-inverse.
+    pub fn solve_ldlt(a: &[f64], b: &[f64], x: &mut [f64], n: usize) -> bool {
+        debug_assert_eq!(a.len(), n * n);
+        debug_assert_eq!(b.len(), n);
+        debug_assert_eq!(x.len(), n);
+
+        let mut max_diag = 0.0f64;
+        for i in 0..n {
+            max_diag = max_diag.max(a[i * n + i].abs());
+        }
+        if !max_diag.is_finite() || max_diag <= 0.0 {
+            return false;
+        }
+        let tol = max_diag * f64::EPSILON * n as f64;
+
+        // Unit lower-triangular L (strictly below the diagonal) and D.
+        let mut l = vec![0.0f64; n * n];
+        let mut d = vec![0.0f64; n];
+        let mut ld = vec![0.0f64; n];
+
+        for j in 0..n {
+            let mut dj = a[j * n + j];
+            for k in 0..j {
+                let ljk = l[j * n + k];
+                ld[k] = ljk * d[k];
+                dj -= ljk * ld[k];
+            }
+            // NaN pivots (a degenerate JtJ) must fail into the SVD path too.
+            if dj.is_nan() || dj <= tol {
+                return false;
+            }
+            d[j] = dj;
+            let inv = 1.0 / dj;
+            for i in (j + 1)..n {
+                let row = &mut l[i * n..i * n + j + 1];
+                let mut acc = a[i * n + j];
+                for (lik, ldk) in row[..j].iter().zip(&ld[..j]) {
+                    acc -= lik * ldk;
+                }
+                row[j] = acc * inv;
+            }
+        }
+
+        // L y = b, then D z = y (in place), then L^T x = z.
+        let mut y = vec![0.0f64; n];
+        for i in 0..n {
+            let mut acc = b[i];
+            for (k, lik) in l[i * n..i * n + i].iter().enumerate() {
+                acc -= lik * y[k];
+            }
+            y[i] = acc;
+        }
+        for i in 0..n {
+            y[i] /= d[i];
+        }
+        for i in (0..n).rev() {
+            let mut acc = y[i];
+            for k in (i + 1)..n {
+                acc -= l[k * n + i] * x[k];
+            }
+            x[i] = acc;
+        }
+        true
+    }
+
     // -----------------------------------------------------------------
     // Rodrigues (calibration_base.cpp:121-368)
     // -----------------------------------------------------------------
@@ -1203,9 +1290,15 @@ impl LevMarq {
     }
 
     /// `LevMarq::step`: damp the normal equations diagonal by `1 + λ`
-    /// (λ = 10^lambdaLg10) and solve with DECOMP_SVD. The mask is all-ones
-    /// in the stitching pipeline, so `subMatrixWithIndices` is a plain copy
-    /// and `completeSymm` is skipped (err is non-empty).
+    /// (λ = 10^lambdaLg10) and solve. The mask is all-ones in the stitching
+    /// pipeline, so `subMatrixWithIndices` is a plain copy and
+    /// `completeSymm` is skipped (err is non-empty).
+    ///
+    /// OpenCV always solves with `DECOMP_SVD`, and below [`LDLT_MIN_PARAMS`]
+    /// so do we, which keeps every oracle-parity dataset on the reference
+    /// path bit-for-bit. Above it that solve IS the cost of alignment — on a
+    /// 137-image set (548 params) it ran >20 min with ~100% of profile
+    /// samples inside `jacobi_svd_f64` — so we take the LDL^T fast path.
     fn step(&mut self) {
         let lambda = (self.lambda_lg10 as f64 * std::f64::consts::LN_10).exp();
         self.jtjn.copy_from_slice(&self.jtj);
@@ -1213,7 +1306,27 @@ impl LevMarq {
         for i in 0..self.nparams {
             self.jtjn[i * self.nparams + i] *= 1.0 + lambda;
         }
-        cvnum::solve_svd(&self.jtjn, &self.jtjv, &mut self.jtjw, self.nparams);
+        let solved = self.nparams > LDLT_MIN_PARAMS && {
+            // The ray cost is invariant to a global rotation, so JtJ is
+            // rank-deficient by 3. DECOMP_SVD absorbs that in a
+            // pseudo-inverse; LDL^T needs a definite system, so lift the
+            // gauge directions clear of rounding noise with a relative
+            // ridge. It stays far below LM's own damping until lambda
+            // bottoms out — `1.0 + 1e-16` rounds to `1.0` in f64 — which is
+            // precisely when the deficiency would otherwise surface.
+            let mut max_diag = 0.0f64;
+            for i in 0..self.nparams {
+                max_diag = max_diag.max(self.jtjn[i * self.nparams + i].abs());
+            }
+            let ridge = max_diag * GAUGE_RIDGE_REL;
+            for i in 0..self.nparams {
+                self.jtjn[i * self.nparams + i] += ridge;
+            }
+            cvnum::solve_ldlt(&self.jtjn, &self.jtjv, &mut self.jtjw, self.nparams)
+        };
+        if !solved {
+            cvnum::solve_svd(&self.jtjn, &self.jtjv, &mut self.jtjw, self.nparams);
+        }
         for i in 0..self.nparams {
             self.param[i] = self.prev_param[i] - self.jtjw[i];
         }

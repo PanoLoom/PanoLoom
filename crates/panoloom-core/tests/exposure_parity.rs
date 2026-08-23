@@ -72,7 +72,9 @@ fn load_npy_f32_2d(path: &Path) -> (usize, usize, Vec<f32>) {
     let payload = &raw[10 + header_len..];
     assert_eq!(payload.len(), dims[0] * dims[1] * 4);
     let data = payload
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     (dims[0], dims[1], data)
