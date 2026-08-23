@@ -19,12 +19,21 @@ export class EngineClient {
   /** Fired on an UNCAUGHT worker error (wasm panic/OOM) — the engine is
    *  gone; the app should replace this client and re-import its shots. */
   onFatal: ((message: string) => void) | null = null;
+  /** Fired as a long call (align/preview) moves between engine stages, so
+   *  the UI can show which one is running rather than an opaque spinner. */
+  onProgress: ((stage: string) => void) | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./worker.ts", import.meta.url), {
       type: "module",
     });
     this.worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
+      // Progress is out-of-band: it arrives DURING a request, so it must not
+      // settle the pending promise.
+      if (e.data.type === "progress") {
+        this.onProgress?.(e.data.stage);
+        return;
+      }
       const p = this.pending;
       this.pending = null;
       if (!p) return;

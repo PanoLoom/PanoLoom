@@ -65,14 +65,25 @@ fn main() {
         .collect();
     eprintln!("loaded {} images", sources.len());
 
-    let t = Instant::now();
-    let alignment = align(&sources).expect("align");
-    eprintln!(
-        "align total: {:.0}ms ({} placed, {} dropped)",
-        t.elapsed().as_secs_f64() * 1e3,
-        alignment.images.len(),
-        alignment.dropped.len()
-    );
+    // Alignment cache: registration is deterministic for a given input set,
+    // so seam/compose work can be iterated on without paying for it again.
+    // Delete the file (or set PANOLOOM_REALIGN) to force a fresh solve.
+    let cache = dir.join(".alignment.json");
+    let alignment = if cache.exists() && std::env::var_os("PANOLOOM_REALIGN").is_none() {
+        eprintln!("align: reusing {}", cache.display());
+        serde_json::from_str(&std::fs::read_to_string(&cache).unwrap()).unwrap()
+    } else {
+        let t = Instant::now();
+        let a = align(&sources).expect("align");
+        eprintln!(
+            "align total: {:.0}ms ({} placed, {} dropped)",
+            t.elapsed().as_secs_f64() * 1e3,
+            a.images.len(),
+            a.dropped.len()
+        );
+        std::fs::write(&cache, serde_json::to_string(&a).unwrap()).unwrap();
+        a
+    };
 
     // render_preview wants sources ordered like alignment.images.
     let by_id: std::collections::HashMap<u32, &PixelImage> =

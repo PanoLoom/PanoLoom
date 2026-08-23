@@ -29,19 +29,69 @@ fn load_png(path: &Path) -> PixelImage {
     )
 }
 
+fn ring_sources(dir: &Path) -> Vec<SourceImage> {
+    (0..8)
+        .map(|i| SourceImage {
+            id: 100 + i as u32,
+            rgb: load_png(&dir.join(format!("work/img_{i:03}.png"))),
+            pose_prior: None,
+        })
+        .collect()
+}
+
+/// The wasm worker drives its progress UI off these labels, so a rename or a
+/// dropped `stage_timed!` call must fail here rather than silently leaving
+/// the browser on an opaque spinner.
+#[test]
+fn align_and_preview_report_their_stages() {
+    let Some(dir) = dumps_dir("ring_kloppenheim_06") else {
+        eprintln!("SKIP: dumps not present");
+        return;
+    };
+    let sources = ring_sources(&dir);
+
+    let seen: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+    let sink = std::rc::Rc::clone(&seen);
+    let guard =
+        panoloom_core::progress::scoped(Box::new(move |s| sink.borrow_mut().push(s.to_string())));
+
+    let alignment = align(&sources).expect("align");
+    let srcs: Vec<&PixelImage> = alignment
+        .images
+        .iter()
+        .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
+        .collect();
+    render_preview(&srcs, &alignment, &vec![None; srcs.len()], 512).expect("preview");
+    drop(guard);
+
+    let got = seen.borrow();
+    for expected in [
+        "orb-detect",
+        "match-pairs",
+        "estimate",
+        "bundle-adjust",
+        "seam-stage",
+        "graph-cut-seams",
+        "blend",
+    ] {
+        assert!(
+            got.iter().any(|s| s == expected),
+            "missing {expected}: {got:?}"
+        );
+    }
+    // Ordering matters: the UI shows the latest label.
+    let pos = |l: &str| got.iter().position(|s| s == l).unwrap();
+    assert!(pos("orb-detect") < pos("bundle-adjust"));
+    assert!(pos("bundle-adjust") < pos("blend"));
+}
+
 #[test]
 fn pipeline_align_and_preview_ring() {
     let Some(dir) = dumps_dir("ring_kloppenheim_06") else {
         eprintln!("SKIP: dumps not present");
         return;
     };
-    let sources: Vec<SourceImage> = (0..8)
-        .map(|i| SourceImage {
-            id: 100 + i as u32,
-            rgb: load_png(&dir.join(format!("work/img_{i:03}.png"))),
-            pose_prior: None,
-        })
-        .collect();
+    let sources = ring_sources(&dir);
 
     let alignment = align(&sources).expect("align");
     assert_eq!(alignment.images.len(), 8);
