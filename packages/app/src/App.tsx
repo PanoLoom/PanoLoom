@@ -109,6 +109,38 @@ const STAGE_LABELS: Record<string, string> = {
   blend: "blending",
 };
 
+/** Raw seconds stop being readable well before a large stitch finishes — a
+ *  137-shot set runs into the thousands — so switch units as it grows. */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const total = Math.floor(seconds);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  return h > 0 ? `${h}h ${pad(m)}m` : `${m}m ${pad(total % 60)}s`;
+}
+
+/** Rough wall-clock expectation for a stitch, so a long one reads as normal
+ *  rather than broken.
+ *
+ *  Anchored on a measured in-browser run (33 shots, 10 threads,
+ *  registration scale: 23s end to end) against the same set natively
+ *  (~11-16s) — so the browser costs roughly 1.5-2x. The upper bands
+ *  extrapolate that ratio onto the measured native 137-shot run (~21 min,
+ *  ~18 of them seam finding) and want confirming against a real browser
+ *  run at that size.
+ *
+ *  Deliberately coarse, and phrased as a range: cost is driven by how much
+ *  the shots OVERLAP, not by their number alone, so a precise figure would
+ *  be a false promise. */
+function stitchEstimate(shots: number): string | null {
+  if (shots < 20) return null;
+  if (shots < 45) return "under a minute";
+  if (shots < 90) return "a few minutes";
+  if (shots < 160) return "30–60 minutes";
+  return "over an hour";
+}
+
 const saveJpeg = (bytes: Uint8Array, name: string) =>
   saveBlob(
     new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" }),
@@ -752,6 +784,7 @@ export function App() {
     if (!busy) setStage(null);
   }, [busy]);
   const canAlign = ready && shots.length >= 2 && !busy;
+  const estimate = stitchEstimate(shots.length);
   const canExport = ready && phase.kind === "preview" && !busy;
   const adjustDirty =
     adjust.yaw !== 0 || adjust.pitch !== 0 || adjust.roll !== 0;
@@ -830,7 +863,7 @@ export function App() {
               : `engine ready`
             : `loading engine…`}
           {shots.length > 0 && ` · ${shots.length} shots`}
-          {phase.kind === "aligning" && ` · ${elapsed.toFixed(1)}s`}
+          {phase.kind === "aligning" && ` · ${formatElapsed(elapsed)}`}
           {exporting.kind === "running" &&
             ` · exporting band ${exporting.band + 1}/${exporting.bands}`}
           {exporting.kind === "encoding" && ` · encoding JPEG`}
@@ -909,7 +942,21 @@ export function App() {
             </button>
           </>
         )}
-        <button className="align-btn" disabled={!canAlign} onClick={runAlign}>
+        {estimate && phase.kind !== "preview" && (
+          <span className="eta-hint" title="Large sets are dominated by seam finding">
+            ~{estimate}
+          </span>
+        )}
+        <button
+          className="align-btn"
+          disabled={!canAlign}
+          onClick={runAlign}
+          title={
+            estimate
+              ? `${shots.length} shots — usually ${estimate}; you can keep the tab in the background`
+              : undefined
+          }
+        >
           Align &amp; Preview
         </button>
         <div className={`thread${busy ? " busy" : ""}`} />
@@ -1094,6 +1141,12 @@ export function App() {
                   ? "weaving · features → matches → bundle adjustment"
                   : "rendering preview"}
             </div>
+            {estimate && exporting.kind === "idle" && (
+              <div className="eta">
+                {shots.length} shots · usually {estimate} · seam finding is
+                most of it
+              </div>
+            )}
           </div>
         )}
 

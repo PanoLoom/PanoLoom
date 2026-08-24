@@ -388,6 +388,27 @@ button {
   letter-spacing: 0.04em;
 }
 
+.working .eta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  opacity: 0.62;
+  max-width: 34ch;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* Sets big enough to take real time say so before you commit to one. */
+.eta-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  opacity: 0.75;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
 .resume-note {
   position: absolute;
   top: 40px;
