@@ -238,17 +238,25 @@ pub mod cvnum {
         // still runs the identical scalar FMA stream, which keeps the result
         // bit-for-bit equal to the serial form (and to the no-`parallel`
         // build) — same guarantee the `par` helpers carry elsewhere.
-        crate::par::for_each_chunk_mut(out, cols, |i, out_row| {
-            let mut a_col = vec![0.0f64; rows];
-            for (k, a) in a_col.iter_mut().enumerate() {
-                *a = j[k * cols + i];
-            }
-            if kj {
-                kj_row(&a_col, j, rows, cols, out_row);
-            } else {
-                fourcol_row(&a_col, j, rows, cols, out_row);
-            }
-        });
+        // `a_col` is scratch, so it is allocated per WORKER, not per row:
+        // `rows` is 3x the inlier count, and one allocation of that per
+        // output row (548 of them on a 137-shot set, every LM iteration)
+        // starves the browser's shared wasm allocator.
+        crate::par::for_each_chunk_mut_init(
+            out,
+            cols,
+            || vec![0.0f64; rows],
+            |a_col, i, out_row| {
+                for (k, a) in a_col.iter_mut().enumerate() {
+                    *a = j[k * cols + i];
+                }
+                if kj {
+                    kj_row(a_col, j, rows, cols, out_row);
+                } else {
+                    fourcol_row(a_col, j, rows, cols, out_row);
+                }
+            },
+        );
     }
 
     /// `simdDotProduct` for doubles: stride-8 loop into four 2-lane FMA

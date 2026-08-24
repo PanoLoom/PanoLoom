@@ -47,3 +47,44 @@ where
         .enumerate()
         .for_each(|(i, c)| f(i, c));
 }
+
+/// [`for_each_chunk_mut`] with a reusable per-worker scratch value.
+///
+/// Allocating inside the chunk closure costs almost nothing natively, where
+/// the allocator caches per thread — but the browser engine runs rayon over
+/// Web Workers sharing ONE lock-protected wasm allocator, so a large
+/// per-chunk allocation turns into contention that dwarfs the work. `init`
+/// runs once per worker instead. Chunk arithmetic is untouched, so results
+/// stay bit-identical.
+#[cfg(feature = "parallel")]
+pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(
+    data: &mut [T],
+    chunk_len: usize,
+    init: I,
+    f: F,
+) where
+    T: Send,
+    S: Send,
+    I: Fn() -> S + Sync + Send,
+    F: Fn(&mut S, usize, &mut [T]) + Sync + Send,
+{
+    data.par_chunks_mut(chunk_len)
+        .enumerate()
+        .for_each_init(init, |scratch, (i, c)| f(scratch, i, c));
+}
+
+#[cfg(not(feature = "parallel"))]
+pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(
+    data: &mut [T],
+    chunk_len: usize,
+    init: I,
+    f: F,
+) where
+    I: Fn() -> S,
+    F: Fn(&mut S, usize, &mut [T]),
+{
+    let mut scratch = init();
+    data.chunks_mut(chunk_len)
+        .enumerate()
+        .for_each(|(i, c)| f(&mut scratch, i, c));
+}
