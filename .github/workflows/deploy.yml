@@ -48,7 +48,12 @@ jobs:
             # This repository is public, so its Action logs are public:
             # report findings, never raw API bodies (they carry token and
             # account identifiers).
+            # User tokens verify under /user; account-owned tokens verify
+            # under their account. Try both before calling one rejected.
             valid=$(api /user/tokens/verify /tmp/tok.json)
+            if [ "$valid" != "200" ]; then
+              valid=$(api "/accounts/$ACCOUNT/tokens/verify" /tmp/tok.json)
+            fi
             api /accounts /tmp/accts.json > /dev/null
             seen=$(grep -o '"count":[0-9]*' /tmp/accts.json | head -1 | cut -d: -f2)
             echo "::error::Cannot reach the panoloom Pages project (HTTP $code)."
@@ -59,10 +64,12 @@ jobs:
             fi
             echo "  accounts visible to this token: ${seen:-0}"
             echo
-            echo "  Fix: Permissions must include Account -> Cloudflare Pages -> Edit,"
-            echo "  and Account Resources must include the account in CLOUDFLARE_ACCOUNT_ID."
-            echo "  A token holding only User- or Zone-scoped rows sees 0 accounts"
-            echo "  and 403s here even though it verifies as active."
+            echo "  Fix: the PERMISSIONS list must contain a row scoped to Account:"
+            echo "    Account | Cloudflare Pages | Edit"
+            echo "  Account Resources alone is not enough — it only narrows rows that"
+            echo "  already exist. A token holding only User- or Zone-scoped rows"
+            echo "  verifies as active yet sees 0 accounts and 403s here, whether its"
+            echo "  resources say All accounts or one specific account."
             exit 1
           fi
 
