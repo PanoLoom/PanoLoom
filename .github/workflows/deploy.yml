@@ -32,29 +32,39 @@ jobs:
             exit 1
           fi
 
-          # Exactly the call the deploy makes. wrangler reports its failure
-          # as a bare "Authentication error [code: 10000]" after a full
-          # build, so check it up front and say what is actually wrong.
-          code=$(curl -s -o /tmp/cf.json -w '%{http_code}' \
-            -H "Authorization: Bearer $TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/pages/projects/panoloom")
-          if [ "$code" != "200" ]; then
-            echo "::error::Cloudflare API returned HTTP $code for the panoloom Pages project."
-            echo "The token needs Account -> Cloudflare Pages -> Edit, scoped to this account."
-            echo "--- response (no secrets; GitHub masks the account id) ---"
-            head -c 800 /tmp/cf.json || true
+          # Exactly the call the deploy makes. wrangler reports its
+          # failure as a bare "Authentication error [code: 10000]" only
+          # after a full nightly+wasm build, so check it up front.
+          api() { # $1 = path, $2 = body file -> prints the HTTP status
+            curl -s -o "$2" -w '%{http_code}' \
+              -H "Authorization: Bearer $TOKEN" \
+              "https://api.cloudflare.com/client/v4$1"
+          }
+
+          code=$(api "/accounts/$ACCOUNT/pages/projects/panoloom" /tmp/proj.json)
+          if [ "$code" = "200" ]; then
+            echo "credentials OK — the token can reach the panoloom Pages project"
+          else
+            # This repository is public, so its Action logs are public:
+            # report findings, never raw API bodies (they carry token and
+            # account identifiers).
+            valid=$(api /user/tokens/verify /tmp/tok.json)
+            api /accounts /tmp/accts.json > /dev/null
+            seen=$(grep -o '"count":[0-9]*' /tmp/accts.json | head -1 | cut -d: -f2)
+            echo "::error::Cannot reach the panoloom Pages project (HTTP $code)."
+            if [ "$valid" = "200" ]; then
+              echo "  token itself: valid and active"
+            else
+              echo "  token itself: REJECTED (HTTP $valid) — re-set CLOUDFLARE_API_TOKEN"
+            fi
+            echo "  accounts visible to this token: ${seen:-0}"
             echo
-            echo "--- is the token itself valid? ---"
-            curl -s -H "Authorization: Bearer $TOKEN" \
-              https://api.cloudflare.com/client/v4/user/tokens/verify | head -c 400
-            echo
-            echo "--- which accounts can this token see? ---"
-            curl -s -H "Authorization: Bearer $TOKEN" \
-              https://api.cloudflare.com/client/v4/accounts | head -c 600
-            echo
+            echo "  Fix: Permissions must include Account -> Cloudflare Pages -> Edit,"
+            echo "  and Account Resources must include the account in CLOUDFLARE_ACCOUNT_ID."
+            echo "  A token holding only User- or Zone-scoped rows sees 0 accounts"
+            echo "  and 403s here even though it verifies as active."
             exit 1
           fi
-          echo "credentials OK — the token can reach the panoloom Pages project"
 
       - uses: actions/checkout@v4
       # nightly + rust-src for the multithreaded build (build-std, +atomics)
