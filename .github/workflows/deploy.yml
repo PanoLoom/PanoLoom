@@ -94,6 +94,7 @@ jobs:
       - run: pnpm build
 
       - name: Deploy to Cloudflare Pages
+        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -101,22 +102,40 @@ jobs:
           command: pages deploy packages/app/dist --project-name=panoloom
 
       # Proves the deploy landed. Reading a green Deploy as "the site is
-      # current" is exactly the mistake this guards: the live site must
-      # serve the bundle THIS run just built.
-      - name: Verify the live site serves this build
+      # current" is exactly the mistake this guards: the deployment must
+      # actually serve the bundle THIS run just built.
+      - name: Verify the deployment serves this build
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           asset=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' packages/app/dist/index.html | head -1)
           if [ -z "$asset" ]; then
             echo "::error::could not determine the built bundle name from dist/index.html"
             exit 1
           fi
-          echo "expecting the live site to serve $asset"
-          for _ in $(seq 1 20); do
-            if curl -fsS https://panoloom.pages.dev/ | grep -q "$asset"; then
-              echo "confirmed: panoloom.pages.dev serves $asset"
-              exit 0
+
+          # Pages only publishes the production branch to panoloom.pages.dev;
+          # any other ref becomes a preview deployment at its own URL. Check
+          # whatever this run produced, and additionally pin production when
+          # this IS the production branch.
+          targets="$DEPLOY_URL"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            targets="$targets https://panoloom.pages.dev"
+          fi
+          if [ -z "$(echo $targets | tr -d ' ')" ]; then
+            echo "::error::no deployment URL to verify"
+            exit 1
+          fi
+
+          for url in $targets; do
+            served=
+            for _ in $(seq 1 20); do
+              if curl -fsS "$url/" | grep -q "$asset"; then served=1; break; fi
+              sleep 15
+            done
+            if [ -z "$served" ]; then
+              echo "::error::$url is still not serving $asset after 5 minutes"
+              exit 1
             fi
-            sleep 15
+            echo "confirmed: $url serves $asset"
           done
-          echo "::error::panoloom.pages.dev is still not serving $asset after 5 minutes"
-          exit 1
