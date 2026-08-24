@@ -32,6 +32,47 @@ jobs:
             exit 1
           fi
 
+          # Exactly the call the deploy makes. wrangler reports its
+          # failure as a bare "Authentication error [code: 10000]" only
+          # after a full nightly+wasm build, so check it up front.
+          api() { # $1 = path, $2 = body file -> prints the HTTP status
+            curl -s -o "$2" -w '%{http_code}' \
+              -H "Authorization: Bearer $TOKEN" \
+              "https://api.cloudflare.com/client/v4$1"
+          }
+
+          code=$(api "/accounts/$ACCOUNT/pages/projects/panoloom" /tmp/proj.json)
+          if [ "$code" = "200" ]; then
+            echo "credentials OK — the token can reach the panoloom Pages project"
+          else
+            # This repository is public, so its Action logs are public:
+            # report findings, never raw API bodies (they carry token and
+            # account identifiers).
+            # User tokens verify under /user; account-owned tokens verify
+            # under their account. Try both before calling one rejected.
+            valid=$(api /user/tokens/verify /tmp/tok.json)
+            if [ "$valid" != "200" ]; then
+              valid=$(api "/accounts/$ACCOUNT/tokens/verify" /tmp/tok.json)
+            fi
+            api /accounts /tmp/accts.json > /dev/null
+            seen=$(grep -o '"count":[0-9]*' /tmp/accts.json | head -1 | cut -d: -f2)
+            echo "::error::Cannot reach the panoloom Pages project (HTTP $code)."
+            if [ "$valid" = "200" ]; then
+              echo "  token itself: valid and active"
+            else
+              echo "  token itself: REJECTED (HTTP $valid) — re-set CLOUDFLARE_API_TOKEN"
+            fi
+            echo "  accounts visible to this token: ${seen:-0}"
+            echo
+            echo "  Fix: the PERMISSIONS list must contain a row scoped to Account:"
+            echo "    Account | Cloudflare Pages | Edit"
+            echo "  Account Resources alone is not enough — it only narrows rows that"
+            echo "  already exist. A token holding only User- or Zone-scoped rows"
+            echo "  verifies as active yet sees 0 accounts and 403s here, whether its"
+            echo "  resources say All accounts or one specific account."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
       # nightly + rust-src for the multithreaded build (build-std, +atomics)
       - uses: dtolnay/rust-toolchain@nightly
@@ -53,6 +94,7 @@ jobs:
       - run: pnpm build
 
       - name: Deploy to Cloudflare Pages
+        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -60,22 +102,40 @@ jobs:
           command: pages deploy packages/app/dist --project-name=panoloom
 
       # Proves the deploy landed. Reading a green Deploy as "the site is
-      # current" is exactly the mistake this guards: the live site must
-      # serve the bundle THIS run just built.
-      - name: Verify the live site serves this build
+      # current" is exactly the mistake this guards: the deployment must
+      # actually serve the bundle THIS run just built.
+      - name: Verify the deployment serves this build
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
         run: |
           asset=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' packages/app/dist/index.html | head -1)
           if [ -z "$asset" ]; then
             echo "::error::could not determine the built bundle name from dist/index.html"
             exit 1
           fi
-          echo "expecting the live site to serve $asset"
-          for _ in $(seq 1 20); do
-            if curl -fsS https://panoloom.pages.dev/ | grep -q "$asset"; then
-              echo "confirmed: panoloom.pages.dev serves $asset"
-              exit 0
+
+          # Pages only publishes the production branch to panoloom.pages.dev;
+          # any other ref becomes a preview deployment at its own URL. Check
+          # whatever this run produced, and additionally pin production when
+          # this IS the production branch.
+          targets="$DEPLOY_URL"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            targets="$targets https://panoloom.pages.dev"
+          fi
+          if [ -z "$(echo $targets | tr -d ' ')" ]; then
+            echo "::error::no deployment URL to verify"
+            exit 1
+          fi
+
+          for url in $targets; do
+            served=
+            for _ in $(seq 1 20); do
+              if curl -fsS "$url/" | grep -q "$asset"; then served=1; break; fi
+              sleep 15
+            done
+            if [ -z "$served" ]; then
+              echo "::error::$url is still not serving $asset after 5 minutes"
+              exit 1
             fi
-            sleep 15
+            echo "confirmed: $url serves $asset"
           done
-          echo "::error::panoloom.pages.dev is still not serving $asset after 5 minutes"
-          exit 1
