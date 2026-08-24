@@ -32,6 +32,21 @@ jobs:
             exit 1
           fi
 
+          # Exactly the call the deploy makes. wrangler reports its failure
+          # as a bare "Authentication error [code: 10000]" after a full
+          # build, so check it up front and say what is actually wrong.
+          code=$(curl -s -o /tmp/cf.json -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT/pages/projects/panoloom")
+          if [ "$code" != "200" ]; then
+            echo "::error::Cloudflare API returned HTTP $code for the panoloom Pages project."
+            echo "The token needs Account -> Cloudflare Pages -> Edit, scoped to this account."
+            echo "--- response (no secrets; GitHub masks the account id) ---"
+            head -c 800 /tmp/cf.json || true
+            exit 1
+          fi
+          echo "credentials OK — the token can reach the panoloom Pages project"
+
       - uses: actions/checkout@v4
       # nightly + rust-src for the multithreaded build (build-std, +atomics)
       - uses: dtolnay/rust-toolchain@nightly
