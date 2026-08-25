@@ -57,6 +57,19 @@ const LDLT_MIN_PARAMS: usize = 160;
 /// lift the ray cost's 3 gauge directions out of rounding noise.
 const GAUGE_RIDGE_REL: f64 = 1e-9;
 
+/// Parameter-change threshold LM stops at, above [`LDLT_MIN_PARAMS`].
+///
+/// OpenCV's criterion is `DBL_EPSILON`, which a large problem never reaches:
+/// traced on a 137-shot set the relative parameter change plateaus near
+/// 1.2e-5 decaying like 1/n, so LM always runs the full `max_count` of
+/// 1000. Those iterations are not doing work — 25 to 200 cuts the error
+/// 41%, while 400 to 1000 buys 1.1% for 60% of the runtime.
+///
+/// 5e-5 lands near iteration 410 on that curve: ~2.4x less bundle
+/// adjustment for ~1.1% more residual. Small problems keep OpenCV's exact
+/// criterion, so every parity dataset is unaffected.
+const PRACTICAL_PARAM_EPS: f64 = 5e-5;
+
 /// Verbatim ports of the OpenCV numeric kernels the bundle adjuster runs on.
 /// Public so the parity tests can validate each primitive against cv2
 /// fixtures; not part of the crate's stable API.
@@ -1211,7 +1224,11 @@ impl LevMarq {
             err_norm: f64::MAX,
             lambda_lg10: -3,
             max_count: 1000, // MIN(MAX(1000,1),1000)
-            epsilon: f64::EPSILON,
+            epsilon: if nparams > LDLT_MIN_PARAMS {
+                PRACTICAL_PARAM_EPS
+            } else {
+                f64::EPSILON
+            },
             state: LmState::Started,
             iters: 0,
         }
