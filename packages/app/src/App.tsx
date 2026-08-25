@@ -147,6 +147,35 @@ function stitchEstimate(shots: number): string | null {
   return "over an hour";
 }
 
+/** The stitch as a person would describe it. Engine stages are finer than
+ *  this and some are too brief to be worth a row, so several map onto one
+ *  step; anything unrecognised is ignored rather than shown raw. */
+const STITCH_STEPS: { key: string; label: string; stages: string[] }[] = [
+  { key: "features", label: "Finding features", stages: ["orb-detect"] },
+  { key: "matching", label: "Matching shots", stages: ["match-pairs"] },
+  {
+    key: "aligning",
+    label: "Refining alignment",
+    stages: ["estimate", "bundle-adjust"],
+  },
+  {
+    key: "seams",
+    label: "Cutting seams",
+    stages: ["seam-stage", "graph-cut-seams"],
+  },
+  {
+    key: "blending",
+    label: "Blending",
+    stages: ["compose-warp", "blend-feed", "blend"],
+  },
+];
+
+const STEP_OF_STAGE = new Map(
+  STITCH_STEPS.flatMap((s) => s.stages.map((g) => [g, s.key] as const)),
+);
+
+type StepState = { startedAt: number; endedAt?: number; detail?: string };
+
 /** Engine stages may carry sub-progress as `base:detail` (bundle adjustment
  *  reports `bundle-adjust:340/1000`). Render the friendly name plus the
  *  detail verbatim, so a long stage shows movement instead of a frozen
@@ -215,6 +244,8 @@ export function App() {
     seconds: number;
     shots: number;
   } | null>(null);
+  const [steps, setSteps] = useState<Record<string, StepState>>({});
+  const activeStep = useRef<string | null>(null);
   const stitchStart = useRef<number | null>(null);
   /** Read inside the timer effect, which must not re-run when shots change. */
   const shotCount = useRef(0);
@@ -231,7 +262,35 @@ export function App() {
     const c = new EngineClient();
     engine.current = c;
     c.onFatal = () => recoverEngine.current();
-    c.onProgress = (s) => setStage(s);
+    c.onProgress = (s) => {
+      setStage(s);
+      const cut = s.indexOf(":");
+      const base = cut === -1 ? s : s.slice(0, cut);
+      const detail = cut === -1 ? undefined : s.slice(cut + 1);
+      const key = STEP_OF_STAGE.get(base);
+      if (!key) return;
+      const now = Date.now();
+      const changed = activeStep.current !== key;
+      const previous = activeStep.current;
+      activeStep.current = key;
+      setSteps((prev) => {
+        const current = prev[key];
+        // Redundant repeats are common — several engine stages map to one
+        // step. Returning `prev` unchanged skips the render entirely, which
+        // is a better filter than a timer: it never drops a real update.
+        if (!changed && current && current.detail === detail) return prev;
+        const next = { ...prev };
+        if (changed && previous && next[previous]) {
+          next[previous] = {
+            ...next[previous],
+            endedAt: now,
+            detail: undefined,
+          };
+        }
+        next[key] = { startedAt: changed ? now : (current?.startedAt ?? now), detail };
+        return next;
+      });
+    };
     // ?threads=N caps the pool (diagnostics / constrained machines).
     const raw = new URLSearchParams(location.search).get("threads");
     const cap = raw === null ? undefined : Number(raw);
@@ -598,6 +657,8 @@ export function App() {
     setElapsed(0);
     setCps(null);
     setCpEditorOpen(false);
+    setSteps({});
+    activeStep.current = null;
     setPhase({ kind: "aligning" });
     try {
       const result = await engine.current!.align();
@@ -825,9 +886,20 @@ export function App() {
     exporting.kind !== "idle";
 
   // Drop the stage label as soon as the work ends, so a stale one never
-  // lingers under the next spinner.
+  // lingers under the next spinner, and close out the final step so its
+  // duration is not left blank.
   useEffect(() => {
-    if (!busy) setStage(null);
+    if (busy) return;
+    setStage(null);
+    const last = activeStep.current;
+    activeStep.current = null;
+    if (last) {
+      setSteps((prev) =>
+        prev[last]
+          ? { ...prev, [last]: { ...prev[last], endedAt: Date.now(), detail: undefined } }
+          : prev,
+      );
+    }
   }, [busy]);
 
   useEffect(() => {
@@ -847,6 +919,11 @@ export function App() {
   // sphereCorrection effect on every unrelated state change (stage progress
   // included), which is both wasted work and how the pre-ready PSV crash
   // surfaced.
+  // The elapsed clock re-renders this component every 100ms while a stitch
+  // runs, so reading the wall clock here keeps the active step's timer live
+  // without a second interval.
+  const nowTick = Date.now();
+
   const correction: SphereCorrection = useMemo(() => {
     const euler = eulerYXZ(orientationFor(adjust.yaw, adjust.pitch, adjust.roll));
     return { pan: -euler.y, tilt: -euler.x, roll: euler.z };
@@ -1188,19 +1265,43 @@ export function App() {
 
         {busy && (
           <div className="working">
-            <div className="step">
-              {exporting.kind === "planning"
-                ? "preparing export"
-                : exporting.kind === "running"
-                  ? `exporting band ${exporting.band + 1}/${exporting.bands}`
-                  : exporting.kind === "encoding"
-                    ? "encoding JPEG"
-                    : stage
-                      ? `weaving · ${describeStage(stage)}`
-                      : phase.kind === "aligning"
-                        ? "weaving · features → matches → bundle adjustment"
-                        : "rendering preview"}
-            </div>
+            {exporting.kind !== "idle" ? (
+              <div className="step">
+                {exporting.kind === "planning"
+                  ? "preparing export"
+                  : exporting.kind === "running"
+                    ? `exporting band ${exporting.band + 1}/${exporting.bands}`
+                    : "encoding JPEG"}
+              </div>
+            ) : (
+              <>
+                <div className="step">weaving</div>
+                <ol className="steplist">
+                  {STITCH_STEPS.map((s) => {
+                    const st = steps[s.key];
+                    const state = !st ? "todo" : st.endedAt ? "done" : "now";
+                    const took =
+                      st?.endedAt !== undefined
+                        ? formatElapsed((st.endedAt - st.startedAt) / 1000)
+                        : st
+                          ? formatElapsed((nowTick - st.startedAt) / 1000)
+                          : "";
+                    return (
+                      <li key={s.key} className={`steprow ${state}`}>
+                        <span className="mark" aria-hidden="true">
+                          {state === "done" ? "✓" : state === "now" ? "•" : "○"}
+                        </span>
+                        <span className="name">{s.label}</span>
+                        <span className="meta">
+                          {st?.detail ? `${st.detail} · ` : ""}
+                          {took}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </>
+            )}
             {exporting.kind === "planning" && (
               <div className="eta">
                 planning bands and decoding sources at full resolution

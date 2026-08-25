@@ -427,6 +427,13 @@ pub fn find_seams_graph_cut_color(
         }
     }
 
+    // Per-pair progress is not available here: `rayon::scope` blocks the
+    // calling thread without enlisting it, so no pair ever runs on the
+    // thread carrying the progress hook. Report the scale instead — with
+    // the elapsed clock beside it, "3400 pairs" at least says what the wait
+    // is proportional to.
+    crate::progress::stage(&format!("graph-cut-seams:{} pairs", pairs.len()));
+
     // Bounding boxes of warped sphere images (pole shots span nearly the
     // whole strip) intersect far more often than the MASKS do, and when no
     // pixel carries both masks the cut's mask update is a no-op (every

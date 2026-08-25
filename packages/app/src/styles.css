@@ -388,14 +388,80 @@ button {
   letter-spacing: 0.04em;
 }
 
+/* The stitch as a checklist: what is done, what is running and how long
+   each took. Friendlier than one changing line, and it makes a long stage
+   read as progress rather than a stall. */
+.steplist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 290px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.steprow {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  transition: background 220ms ease, opacity 220ms ease;
+}
+
+.steprow .mark {
+  text-align: center;
+  font-size: 11px;
+}
+
+.steprow .meta {
+  font-size: 11px;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.steprow.todo {
+  opacity: 0.38;
+}
+
+.steprow.done .mark {
+  color: var(--accent, #e8a33d);
+}
+
+.steprow.now {
+  background: color-mix(in srgb, var(--text-dim) 12%, transparent);
+}
+
+.steprow.now .mark {
+  color: var(--accent, #e8a33d);
+  animation: steppulse 1.4s ease-in-out infinite;
+}
+
+.steprow.now .name {
+  color: var(--text, #e9e9ec);
+}
+
+@keyframes steppulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .steprow.now .mark { animation: none; }
+}
+
 .working .eta {
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.03em;
   opacity: 0.62;
-  max-width: 34ch;
+  max-width: 52ch;
   text-align: center;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 /* Sets big enough to take real time say so before you commit to one. */
