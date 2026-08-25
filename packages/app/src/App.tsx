@@ -141,6 +141,7 @@ function stitchEstimate(shots: number): string | null {
   if (shots < 90) return "a few minutes";
   if (shots < 160) return "20–45 minutes";
   return "over an hour";
+}
 
 /** Engine stages may carry sub-progress as `base:detail` (bundle adjustment
  *  reports `bundle-adjust:340/1000`). Render the friendly name plus the
