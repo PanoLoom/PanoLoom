@@ -61,6 +61,7 @@ jobs:
           node packages/app/e2e/m10-mask.mjs
           node packages/app/e2e/m11-restore.mjs
           node packages/app/e2e/m7-export.mjs
+          node packages/app/e2e/m12-export-limits.mjs
           # Cross-engine smoke: full stitch + mask flow on WebKit/Firefox.
           # Headless Firefox on Linux has no WebGL — it exercises the flat
           # viewer fallback (the engine itself runs fully threaded).

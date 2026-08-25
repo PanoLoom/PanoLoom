@@ -1,0 +1,28 @@
+import { chromium } from "playwright";
+import { readdirSync } from "node:fs";
+import path from "node:path";
+const dir = process.env.SET;
+const files = readdirSync(dir).filter(f=>/\.(png|jpg|JPG)$/.test(f) && f!=="preview.png").sort().map(f=>path.join(dir,f));
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const errs=[];
+page.on("pageerror", e=>{errs.push(e.message); console.log("PAGEERROR:", e.message);});
+page.on("console", m=>{ const t=m.text(); if(/recursive|aliasing|panic|unreachable|RuntimeError/i.test(t)) console.log("CONSOLE:", t); });
+await page.goto("http://localhost:4173", { waitUntil: "networkidle" });
+await page.waitForSelector("text=engine ready", { timeout: 30000 });
+await page.setInputFiles('input[type="file"]', files);
+await page.waitForSelector(`text=${files.length} shots`, { timeout: 120000 });
+console.log("imported", files.length);
+await page.click("button.align-btn");
+await page.waitForSelector(".viewer canvas", { timeout: 3000000 });
+console.log("export options:", await page.locator("select.export-size option").evaluateAll(e=>e.map(o=>o.textContent.trim())));
+console.log("stitched:", (await page.locator(".bar-status").textContent()).trim());
+// export
+const dl = page.waitForEvent("download", { timeout: 900000 }).catch(()=>null);
+await page.getByRole("button", { name: /Export JPEG/i }).click();
+const d = await dl;
+console.log("download:", d ? await d.suggestedFilename() : "(none)");
+const err = await page.locator(".error, [class*=err]").allTextContents().catch(()=>[]);
+console.log("visible errors:", err.filter(Boolean));
+console.log("page errors:", errs.length?errs:"none");
+await browser.close();

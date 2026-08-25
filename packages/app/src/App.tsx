@@ -209,6 +209,7 @@ export function App() {
   const files = useRef<Map<number, File>>(new Map());
   const [ready, setReady] = useState(false);
   const [threads, setThreads] = useState(0);
+  const [maxExportWidth, setMaxExportWidth] = useState(65535);
   // Project name: derived from file names until the user renames it.
   const [projectName, setProjectName] = useState("");
   const [editingName, setEditingName] = useState(false);
@@ -307,6 +308,7 @@ export function App() {
     c.init(Number.isFinite(cap) && cap! >= 0 ? cap : undefined).then(
       () => {
         setThreads(c.threads);
+        setMaxExportWidth(c.maxExportWidth);
         setReady(true);
         onReady?.(c);
       },
@@ -1079,6 +1081,12 @@ export function App() {
               title="Panorama width"
             >
               <option value={65535}>Full resolution</option>
+              {maxExportWidth < 65535 && (
+                <option value={maxExportWidth}>
+                  {maxExportWidth} px (largest this browser can hold)
+                </option>
+              )}
+              <option value={16384}>16384 px</option>
               <option value={8192}>8192 px</option>
               <option value={4096}>4096 px</option>
             </select>

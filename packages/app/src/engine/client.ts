@@ -4,6 +4,13 @@
  */
 import type { AlignResult, WorkerRequest, WorkerResponse } from "./protocol";
 
+/** Signatures of an engine left unusable by a wasm trap. */
+const POISONED =
+  /recursive use of an object|unreachable|memory access out of bounds|null pointer passed to rust/i;
+
+const ENGINE_DIED =
+  "the engine ran out of memory and was restarted — try a smaller export size";
+
 type Pending = {
   resolve: (msg: WorkerResponse) => void;
   reject: (err: Error) => void;
@@ -16,6 +23,9 @@ export class EngineClient {
   version = "";
   /** rayon pool size; 0 = single-threaded engine. */
   threads = 0;
+  /** Widest panorama the engine can compose — a large set cannot reach
+   *  full resolution in a 4 GB address space. */
+  maxExportWidth = 65535;
   /** Fired on an UNCAUGHT worker error (wasm panic/OOM) — the engine is
    *  gone; the app should replace this client and re-import its shots. */
   onFatal: ((message: string) => void) | null = null;
@@ -38,6 +48,16 @@ export class EngineClient {
       this.pending = null;
       if (!p) return;
       if (e.data.type === "error") {
+        // A wasm trap (out of memory, unreachable) aborts rather than
+        // unwinds, so the borrow guard on the engine object is never
+        // released. Every later call then fails with "recursive use of an
+        // object" — a message about the wreckage, not the crash. Treat it
+        // as fatal so the engine is rebuilt instead of the user chasing it.
+        if (POISONED.test(e.data.message)) {
+          p.reject(new Error(ENGINE_DIED));
+          this.onFatal?.(ENGINE_DIED);
+          return;
+        }
         p.reject(new Error(e.data.message));
       } else {
         p.resolve(e.data);
@@ -70,6 +90,7 @@ export class EngineClient {
     if (r.type !== "ready") throw new Error("unexpected response");
     this.version = r.version;
     this.threads = r.threads;
+    this.maxExportWidth = r.maxExportWidth;
     return r.version;
   }
 
