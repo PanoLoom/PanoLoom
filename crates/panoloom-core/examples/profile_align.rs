@@ -6,6 +6,9 @@ use panoloom_core::pipeline::{align, render_preview, SourceImage};
 use panoloom_core::warp::PixelImage;
 use std::time::Instant;
 
+/// Written into the input directory, and therefore excluded from the inputs.
+const PREVIEW_NAME: &str = "preview.png";
+
 fn load_png(path: &std::path::Path) -> PixelImage {
     let dec = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap()));
     let mut reader = dec.read_info().unwrap();
@@ -37,7 +40,11 @@ fn main() {
         .unwrap()
         .filter_map(|e| {
             let p = e.unwrap().path();
-            (p.extension().is_some_and(|x| x == "png")).then_some(p)
+            // Skip our own output: it lands in this directory, and a
+            // second run would otherwise ingest the previous panorama as
+            // an input shot.
+            let is_output = p.file_name().is_some_and(|n| n == PREVIEW_NAME);
+            (!is_output && p.extension().is_some_and(|x| x == "png")).then_some(p)
         })
         .collect();
     files.sort();
@@ -113,7 +120,7 @@ fn main() {
 
     // Write the preview out — the point of a stitch is the picture, and
     // timings alone cannot tell you whether it is any good.
-    let out = dir.join("preview.png");
+    let out = dir.join(PREVIEW_NAME);
     let file = std::fs::File::create(&out).unwrap();
     let mut enc = png::Encoder::new(
         std::io::BufWriter::new(file),
