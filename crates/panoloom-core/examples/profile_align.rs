@@ -69,7 +69,7 @@ fn main() {
         // a non-converging run is visible without drowning the log.
         if let Some(d) = s.strip_prefix("bundle-adjust:") {
             let n: usize = d.split('/').next().unwrap_or("0").parse().unwrap_or(0);
-            if n % 100 != 0 {
+            if !n.is_multiple_of(100) {
                 return;
             }
         }
