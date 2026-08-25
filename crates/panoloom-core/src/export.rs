@@ -22,6 +22,9 @@ use crate::warp::{Border, Interp, PixelImage, SphericalWarper};
 
 /// Band height in canvas rows (before padding). Padding must exceed the
 /// multiband blend influence radius (~2^bands).
+const BAND_H: usize = 768;
+const BAND_PAD: usize = 256;
+
 /// Largest compose canvas (RGB + coverage) an export may allocate.
 ///
 /// wasm32 tops out at a 4 GB address space, shared with the registration
@@ -39,9 +42,6 @@ const MAX_CANVAS_BYTES: u64 = 32_000_000_000;
 pub fn max_export_width() -> usize {
     (((MAX_CANVAS_BYTES / 2) as f64).sqrt() as usize) & !1
 }
-
-const BAND_H: usize = 768;
-const BAND_PAD: usize = 256;
 
 pub struct ExportBand {
     pub y0: usize,
