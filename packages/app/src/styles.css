@@ -388,6 +388,54 @@ button {
   letter-spacing: 0.04em;
 }
 
+/* The completed breakdown, reachable after the preview has taken over the
+   overlay — otherwise the final step's timing is only ever on screen for
+   the instant before the panorama replaces it. */
+.stitch-summary {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.stitch-summary:hover {
+  color: var(--text, #e9e9ec);
+}
+
+.summary-card {
+  position: absolute;
+  top: 46px;
+  right: 18px;
+  z-index: 16;
+  padding: 13px 15px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-dim) 22%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 26px rgb(0 0 0 / 32%);
+}
+
+.summary-head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  margin-bottom: 10px;
+}
+
+.summary-card .steplist {
+  min-width: 250px;
+  gap: 5px;
+}
+
+.summary-card .steprow {
+  padding: 2px 0;
+}
+
 /* The stitch as a checklist: what is done, what is running and how long
    each took. Friendlier than one changing line, and it makes a long stage
    read as progress rather than a stall. */

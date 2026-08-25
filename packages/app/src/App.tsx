@@ -245,6 +245,9 @@ export function App() {
     shots: number;
   } | null>(null);
   const [steps, setSteps] = useState<Record<string, StepState>>({});
+  /** The overlay vanishes the moment the preview renders, taking the last
+   *  step's timing with it — so the breakdown stays reachable afterwards. */
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const activeStep = useRef<string | null>(null);
   const stitchStart = useRef<number | null>(null);
   /** Read inside the timer effect, which must not re-run when shots change. */
@@ -658,6 +661,7 @@ export function App() {
     setCps(null);
     setCpEditorOpen(false);
     setSteps({});
+    setSummaryOpen(false);
     activeStep.current = null;
     setPhase({ kind: "aligning" });
     try {
@@ -991,9 +995,17 @@ export function App() {
             : `loading engine…`}
           {shots.length > 0 && ` · ${shots.length} shots`}
           {stitching && ` · ${formatElapsed(elapsed)}`}
-          {!stitching &&
-            lastStitch &&
-            ` · stitched ${lastStitch.shots} shots in ${formatElapsed(lastStitch.seconds)}`}
+          {!stitching && lastStitch && (
+            <button
+              type="button"
+              className="stitch-summary"
+              onClick={() => setSummaryOpen((o) => !o)}
+              title="Per-step timings for the last stitch"
+              aria-expanded={summaryOpen}
+            >
+              {` · stitched ${lastStitch.shots} shots in ${formatElapsed(lastStitch.seconds)}`}
+            </button>
+          )}
           {exporting.kind === "running" &&
             ` · exporting band ${exporting.band + 1}/${exporting.bands}`}
           {exporting.kind === "planning" && ` · preparing export`}
@@ -1261,6 +1273,33 @@ export function App() {
               }}
             />
           </label>
+        )}
+
+        {!busy && summaryOpen && lastStitch && (
+          <div className="summary-card">
+            <div className="summary-head">
+              last stitch · {lastStitch.shots} shots ·{" "}
+              {formatElapsed(lastStitch.seconds)}
+            </div>
+            <ol className="steplist">
+              {STITCH_STEPS.map((st) => {
+                const rec = steps[st.key];
+                return (
+                  <li key={st.key} className={`steprow ${rec ? "done" : "todo"}`}>
+                    <span className="mark" aria-hidden="true">
+                      {rec ? "✓" : "–"}
+                    </span>
+                    <span className="name">{st.label}</span>
+                    <span className="meta">
+                      {rec?.endedAt !== undefined
+                        ? formatElapsed((rec.endedAt - rec.startedAt) / 1000)
+                        : "skipped"}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
         )}
 
         {busy && (
