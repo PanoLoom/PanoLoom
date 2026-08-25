@@ -126,9 +126,11 @@ function formatElapsed(seconds: number): string {
  *  Anchored on a measured in-browser run (33 shots, 10 threads,
  *  registration scale: 23s end to end) against the same set natively
  *  (~11-16s) — so the browser costs roughly 1.5-2x. The upper bands
- *  extrapolate that ratio onto the measured native 137-shot run (~21 min,
- *  ~18 of them seam finding) and want confirming against a real browser
- *  run at that size.
+ *  extrapolate that ratio onto the measured native 137-shot run, now
+ *  11.5 min (20s aligning, the rest seam finding) since prior-seeded
+ *  bundle adjustment landed. That 1.5-2x factor has NOT been verified at
+ *  137 shots, so the band is deliberately wide until a real browser run
+ *  at that size says otherwise.
  *
  *  Deliberately coarse, and phrased as a range: cost is driven by how much
  *  the shots OVERLAP, not by their number alone, so a precise figure would
@@ -137,8 +139,20 @@ function stitchEstimate(shots: number): string | null {
   if (shots < 20) return null;
   if (shots < 45) return "under a minute";
   if (shots < 90) return "a few minutes";
-  if (shots < 160) return "30–60 minutes";
+  if (shots < 160) return "20–45 minutes";
   return "over an hour";
+}
+
+/** Engine stages may carry sub-progress as `base:detail` (bundle adjustment
+ *  reports `bundle-adjust:340/1000`). Render the friendly name plus the
+ *  detail verbatim, so a long stage shows movement instead of a frozen
+ *  label. */
+function describeStage(stage: string): string {
+  const cut = stage.indexOf(":");
+  const base = cut === -1 ? stage : stage.slice(0, cut);
+  const detail = cut === -1 ? "" : stage.slice(cut + 1);
+  const label = STAGE_LABELS[base] ?? base;
+  return detail ? `${label} ${detail}` : label;
 }
 
 const saveJpeg = (bytes: Uint8Array, name: string) =>
@@ -1136,7 +1150,7 @@ export function App() {
           <div className="working">
             <div className="step">
               {stage
-                ? `weaving · ${STAGE_LABELS[stage] ?? stage}`
+                ? `weaving · ${describeStage(stage)}`
                 : phase.kind === "aligning"
                   ? "weaving · features → matches → bundle adjustment"
                   : "rendering preview"}

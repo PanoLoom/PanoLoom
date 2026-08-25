@@ -64,6 +64,17 @@ fn main() {
         })
         .collect();
     eprintln!("loaded {} images", sources.len());
+    let _progress = panoloom_core::progress::scoped(Box::new(|s: &str| {
+        // Bundle adjustment reports every LM iteration; show every 100th so
+        // a non-converging run is visible without drowning the log.
+        if let Some(d) = s.strip_prefix("bundle-adjust:") {
+            let n: usize = d.split('/').next().unwrap_or("0").parse().unwrap_or(0);
+            if !n.is_multiple_of(100) {
+                return;
+            }
+        }
+        eprintln!("[stage] {s}");
+    }));
 
     // Alignment cache: registration is deterministic for a given input set,
     // so seam/compose work can be iterated on without paying for it again.
@@ -99,4 +110,21 @@ fn main() {
         p.width,
         p.height,
     );
+
+    // Write the preview out — the point of a stitch is the picture, and
+    // timings alone cannot tell you whether it is any good.
+    let out = dir.join("preview.png");
+    let file = std::fs::File::create(&out).unwrap();
+    let mut enc = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        p.width as u32,
+        p.height as u32,
+    );
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .unwrap()
+        .write_image_data(&p.rgba)
+        .unwrap();
+    eprintln!("wrote {}", out.display());
 }

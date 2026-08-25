@@ -187,6 +187,26 @@ pub fn align(sources: &[SourceImage]) -> Result<Alignment, String> {
     };
 
     let mut cameras = stage_timed!("estimate", homography_based_estimate(&features, &graph));
+
+    // Seed the rotations from the shooting rig's own pose when every kept
+    // image carries one. The homography chain derives rotations by walking
+    // a spanning tree of pairwise estimates, so error accumulates along the
+    // walk; the gimbal reports each shot's pose absolutely and independently
+    // (the DJI priors fit solved cameras at 0.81 deg median). Focals still
+    // come from the estimate — priors say nothing about them — and bundle
+    // adjustment still refines everything against image content. This only
+    // moves the starting point.
+    if kept.iter().all(|&i| sources[i].pose_prior.is_some()) {
+        for (cam, &i) in cameras.iter_mut().zip(&kept) {
+            let r = prior_rotation(sources[i].pose_prior.expect("checked above"));
+            for a in 0..3 {
+                for b in 0..3 {
+                    cam.r[a][b] = r[a][b] as f32;
+                }
+            }
+        }
+    }
+
     if !stage_timed!(
         "bundle-adjust",
         bundle_adjust_ray(&features, &graph, &mut cameras)

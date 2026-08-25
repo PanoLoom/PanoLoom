@@ -57,6 +57,19 @@ const LDLT_MIN_PARAMS: usize = 160;
 /// lift the ray cost's 3 gauge directions out of rounding noise.
 const GAUGE_RIDGE_REL: f64 = 1e-9;
 
+/// Parameter-change threshold LM stops at, above [`LDLT_MIN_PARAMS`].
+///
+/// OpenCV's criterion is `DBL_EPSILON`, which a large problem never reaches:
+/// traced on a 137-shot set the relative parameter change plateaus near
+/// 1.2e-5 decaying like 1/n, so LM always runs the full `max_count` of
+/// 1000. Those iterations are not doing work — 25 to 200 cuts the error
+/// 41%, while 400 to 1000 buys 1.1% for 60% of the runtime.
+///
+/// 5e-5 lands near iteration 410 on that curve: ~2.4x less bundle
+/// adjustment for ~1.1% more residual. Small problems keep OpenCV's exact
+/// criterion, so every parity dataset is unaffected.
+const PRACTICAL_PARAM_EPS: f64 = 5e-5;
+
 /// Verbatim ports of the OpenCV numeric kernels the bundle adjuster runs on.
 /// Public so the parity tests can validate each primitive against cv2
 /// fixtures; not part of the crate's stable API.
@@ -238,17 +251,25 @@ pub mod cvnum {
         // still runs the identical scalar FMA stream, which keeps the result
         // bit-for-bit equal to the serial form (and to the no-`parallel`
         // build) — same guarantee the `par` helpers carry elsewhere.
-        crate::par::for_each_chunk_mut(out, cols, |i, out_row| {
-            let mut a_col = vec![0.0f64; rows];
-            for (k, a) in a_col.iter_mut().enumerate() {
-                *a = j[k * cols + i];
-            }
-            if kj {
-                kj_row(&a_col, j, rows, cols, out_row);
-            } else {
-                fourcol_row(&a_col, j, rows, cols, out_row);
-            }
-        });
+        // `a_col` is scratch, so it is allocated per WORKER, not per row:
+        // `rows` is 3x the inlier count, and one allocation of that per
+        // output row (548 of them on a 137-shot set, every LM iteration)
+        // starves the browser's shared wasm allocator.
+        crate::par::for_each_chunk_mut_init(
+            out,
+            cols,
+            || vec![0.0f64; rows],
+            |a_col, i, out_row| {
+                for (k, a) in a_col.iter_mut().enumerate() {
+                    *a = j[k * cols + i];
+                }
+                if kj {
+                    kj_row(a_col, j, rows, cols, out_row);
+                } else {
+                    fourcol_row(a_col, j, rows, cols, out_row);
+                }
+            },
+        );
     }
 
     /// `simdDotProduct` for doubles: stride-8 loop into four 2-lane FMA
@@ -1171,6 +1192,8 @@ struct LevMarq {
     lambda_lg10: i32,
     max_count: usize,
     epsilon: f64,
+    /// Parameters pinned at their initial value — used to fix the gauge.
+    fixed: Vec<bool>,
     state: LmState,
     iters: usize,
 }
@@ -1202,8 +1225,13 @@ impl LevMarq {
             prev_err_norm: f64::MAX,
             err_norm: f64::MAX,
             lambda_lg10: -3,
+            fixed: vec![false; nparams],
             max_count: 1000, // MIN(MAX(1000,1),1000)
-            epsilon: f64::EPSILON,
+            epsilon: if nparams > LDLT_MIN_PARAMS {
+                PRACTICAL_PARAM_EPS
+            } else {
+                f64::EPSILON
+            },
             state: LmState::Started,
             iters: 0,
         }
@@ -1265,6 +1293,17 @@ impl LevMarq {
                 }
                 self.lambda_lg10 = (self.lambda_lg10 - 1).max(-16);
                 self.iters += 1;
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var_os("PANOLOOM_LMTRACE").is_some() && self.iters.is_multiple_of(25) {
+                    eprintln!(
+                        "[lm] iter={} lambda=1e{} rel_change={:.3e} (needs < {:.3e}) err={:.6e}",
+                        self.iters,
+                        self.lambda_lg10,
+                        cvnum::norm_rel_l2(&self.param, &self.prev_param),
+                        self.epsilon,
+                        self.err_norm
+                    );
+                }
                 if self.iters >= self.max_count
                     || cvnum::norm_rel_l2(&self.param, &self.prev_param) < self.epsilon
                 {
@@ -1305,6 +1344,31 @@ impl LevMarq {
         self.jtjv.copy_from_slice(&self.jterr);
         for i in 0..self.nparams {
             self.jtjn[i * self.nparams + i] *= 1.0 + lambda;
+        }
+        // Gauge fixing: zero a pinned parameter's row, column and gradient,
+        // leaving a unit diagonal. The system then decouples — the pinned
+        // parameter takes a zero step and every other equation is exactly
+        // the original one with that unknown removed. Cheaper than
+        // extracting a submatrix and it works for either solver.
+        if self.fixed.iter().any(|&f| f) {
+            let mut scale = 0.0f64;
+            for i in 0..self.nparams {
+                scale = scale.max(self.jtjn[i * self.nparams + i].abs());
+            }
+            if scale <= 0.0 {
+                scale = 1.0;
+            }
+            for i in 0..self.nparams {
+                if !self.fixed[i] {
+                    continue;
+                }
+                for k in 0..self.nparams {
+                    self.jtjn[i * self.nparams + k] = 0.0;
+                    self.jtjn[k * self.nparams + i] = 0.0;
+                }
+                self.jtjn[i * self.nparams + i] = scale;
+                self.jtjv[i] = 0.0;
+            }
         }
         let solved = self.nparams > LDLT_MIN_PARAMS && {
             // The ray cost is invariant to a global rotation, so JtJ is
@@ -1513,7 +1577,16 @@ pub fn bundle_adjust_ray(
     let mut err1 = vec![0.0f64; nerrs];
     let mut err2 = vec![0.0f64; nerrs];
 
+    // LM runs to `max_count` on hard problems — a 137-shot set uses all
+    // 1000 iterations — and each one is a Jacobian, a JtJ and a solve. With
+    // nothing reported, that is minutes to hours of a frozen label, which
+    // is indistinguishable from a hang and hides non-convergence entirely.
+    let mut announced = usize::MAX;
     loop {
+        if solver.iters != announced {
+            announced = solver.iters;
+            crate::progress::stage(&format!("bundle-adjust:{}/{}", announced, solver.max_count));
+        }
         let req = solver.update();
         cam_params.copy_from_slice(&solver.param);
         if !req.proceed || !req.want_err {
