@@ -29,12 +29,16 @@ type Shot = Omit<DecodedImage, "rgba"> & {
 type Phase =
   | { kind: "empty" }
   | { kind: "loaded" }
-  | { kind: "aligning"; startedAt: number }
+  | { kind: "aligning" }
   | { kind: "previewing" }
   | { kind: "preview"; rgba: ArrayBuffer; width: number; height: number };
 
 type ExportState =
   | { kind: "idle" }
+  /** Planning the band layout and full-res decoding the first band's
+   *  sources. Silent on a large set otherwise — `busy` keys off this, so
+   *  without it the button appears dead for minutes. */
+  | { kind: "planning" }
   | { kind: "running"; band: number; bands: number }
   | { kind: "encoding" };
 
@@ -207,6 +211,13 @@ export function App() {
   const [dragOver, setDragOver] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [stage, setStage] = useState<string | null>(null);
+  const [lastStitch, setLastStitch] = useState<{
+    seconds: number;
+    shots: number;
+  } | null>(null);
+  const stitchStart = useRef<number | null>(null);
+  /** Read inside the timer effect, which must not re-run when shots change. */
+  const shotCount = useRef(0);
 
   /** Replace a crashed engine and re-import the retained files. Kept in a
    *  ref so the client's onFatal hook always calls the latest version. */
@@ -359,14 +370,31 @@ export function App() {
     }
   }, [shots]);
 
+  // The clock has to span aligning AND previewing: seam finding is the
+  // longest stage by far, and timing it only through alignment meant the
+  // counter vanished exactly when you most wanted it. The total is kept
+  // afterwards too — a stitch you looked away from should still be able to
+  // tell you how long it took.
+  const stitching = phase.kind === "aligning" || phase.kind === "previewing";
   useEffect(() => {
-    if (phase.kind !== "aligning") return;
-    const t = setInterval(
-      () => setElapsed((Date.now() - phase.startedAt) / 1000),
-      100,
-    );
-    return () => clearInterval(t);
-  }, [phase]);
+    if (stitching) {
+      if (stitchStart.current === null) stitchStart.current = Date.now();
+      const t = setInterval(() => {
+        if (stitchStart.current !== null) {
+          setElapsed((Date.now() - stitchStart.current) / 1000);
+        }
+      }, 100);
+      return () => clearInterval(t);
+    }
+    if (stitchStart.current !== null) {
+      const seconds = (Date.now() - stitchStart.current) / 1000;
+      stitchStart.current = null;
+      setElapsed(0);
+      // Ignore trivial re-renders (a re-preview after an orientation nudge).
+      if (seconds > 2) setLastStitch({ seconds, shots: shotCount.current });
+    }
+    return undefined;
+  }, [stitching]);
 
   /** Load a project's photos: ids come from the project, decode at the
    *  project's work scale, then restore the alignment and preview. */
@@ -570,7 +598,7 @@ export function App() {
     setElapsed(0);
     setCps(null);
     setCpEditorOpen(false);
-    setPhase({ kind: "aligning", startedAt: Date.now() });
+    setPhase({ kind: "aligning" });
     try {
       const result = await engine.current!.align();
       setShots((s) =>
@@ -597,6 +625,10 @@ export function App() {
   const runExport = useCallback(async () => {
     if (phase.kind !== "preview") return;
     setError(null);
+    // Before the await: planning and the first band's full-resolution
+    // decodes both happen before any band number exists to report, and on a
+    // 137-shot set that is minutes of apparent nothing.
+    setExporting({ kind: "planning" });
     try {
       const placed = shots.filter((s) => !s.dropped);
       const plan = await engine.current!.beginExport(
@@ -797,6 +829,10 @@ export function App() {
   useEffect(() => {
     if (!busy) setStage(null);
   }, [busy]);
+
+  useEffect(() => {
+    shotCount.current = shots.length;
+  }, [shots.length]);
   const canAlign = ready && shots.length >= 2 && !busy;
   const estimate = stitchEstimate(shots.length);
   const canExport = ready && phase.kind === "preview" && !busy;
@@ -877,9 +913,13 @@ export function App() {
               : `engine ready`
             : `loading engine…`}
           {shots.length > 0 && ` · ${shots.length} shots`}
-          {phase.kind === "aligning" && ` · ${formatElapsed(elapsed)}`}
+          {stitching && ` · ${formatElapsed(elapsed)}`}
+          {!stitching &&
+            lastStitch &&
+            ` · stitched ${lastStitch.shots} shots in ${formatElapsed(lastStitch.seconds)}`}
           {exporting.kind === "running" &&
             ` · exporting band ${exporting.band + 1}/${exporting.bands}`}
+          {exporting.kind === "planning" && ` · preparing export`}
           {exporting.kind === "encoding" && ` · encoding JPEG`}
         </span>
         <span className="bar-spacer" />
@@ -1149,12 +1189,23 @@ export function App() {
         {busy && (
           <div className="working">
             <div className="step">
-              {stage
-                ? `weaving · ${describeStage(stage)}`
-                : phase.kind === "aligning"
-                  ? "weaving · features → matches → bundle adjustment"
-                  : "rendering preview"}
+              {exporting.kind === "planning"
+                ? "preparing export"
+                : exporting.kind === "running"
+                  ? `exporting band ${exporting.band + 1}/${exporting.bands}`
+                  : exporting.kind === "encoding"
+                    ? "encoding JPEG"
+                    : stage
+                      ? `weaving · ${describeStage(stage)}`
+                      : phase.kind === "aligning"
+                        ? "weaving · features → matches → bundle adjustment"
+                        : "rendering preview"}
             </div>
+            {exporting.kind === "planning" && (
+              <div className="eta">
+                planning bands and decoding sources at full resolution
+              </div>
+            )}
             {estimate && exporting.kind === "idle" && (
               <div className="eta">
                 {shots.length} shots · usually {estimate} · seam finding is
