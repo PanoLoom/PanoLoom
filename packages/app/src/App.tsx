@@ -127,14 +127,21 @@ function formatElapsed(seconds: number): string {
 /** Rough wall-clock expectation for a stitch, so a long one reads as normal
  *  rather than broken.
  *
- *  Anchored on a measured in-browser run (33 shots, 10 threads,
- *  registration scale: 23s end to end) against the same set natively
- *  (~11-16s) — so the browser costs roughly 1.5-2x. The upper bands
- *  extrapolate that ratio onto the measured native 137-shot run, now
- *  11.5 min (20s aligning, the rest seam finding) since prior-seeded
- *  bundle adjustment landed. That 1.5-2x factor has NOT been verified at
- *  137 shots, so the band is deliberately wide until a real browser run
- *  at that size says otherwise.
+ *  Measured, not extrapolated. A 137-shot set on a 12-core Ryzen 9 7900
+ *  (16 threads) took 20.9 min in-browser against 11.5 min natively — a
+ *  1.81x factor, matching the 1.5-2x measured independently at 33 shots.
+ *  Per step, browser vs native:
+ *
+ *      finding features       1.1s      2.0x     0.1%
+ *      matching shots         0.8s      1.7x     0.1%
+ *      refining alignment    84.0s      4.0x     6.7%
+ *      cutting seams       1161.0s      1.7x    92.4%
+ *      blending              10.0s      1.5x     0.8%
+ *
+ *  The wasm cost is uniform and unremarkable; seam finding simply IS the
+ *  stitch at this size. The band stays wide because that figure is one
+ *  machine, and cost tracks how much the shots OVERLAP rather than how
+ *  many there are.
  *
  *  Deliberately coarse, and phrased as a range: cost is driven by how much
  *  the shots OVERLAP, not by their number alone, so a precise figure would
