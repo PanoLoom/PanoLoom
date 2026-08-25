@@ -1273,6 +1273,17 @@ impl LevMarq {
                 }
                 self.lambda_lg10 = (self.lambda_lg10 - 1).max(-16);
                 self.iters += 1;
+                #[cfg(not(target_arch = "wasm32"))]
+                if std::env::var_os("PANOLOOM_LMTRACE").is_some() && self.iters % 25 == 0 {
+                    eprintln!(
+                        "[lm] iter={} lambda=1e{} rel_change={:.3e} (needs < {:.3e}) err={:.6e}",
+                        self.iters,
+                        self.lambda_lg10,
+                        cvnum::norm_rel_l2(&self.param, &self.prev_param),
+                        self.epsilon,
+                        self.err_norm
+                    );
+                }
                 if self.iters >= self.max_count
                     || cvnum::norm_rel_l2(&self.param, &self.prev_param) < self.epsilon
                 {

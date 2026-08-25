@@ -57,12 +57,8 @@ where
 /// runs once per worker instead. Chunk arithmetic is untouched, so results
 /// stay bit-identical.
 #[cfg(feature = "parallel")]
-pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(
-    data: &mut [T],
-    chunk_len: usize,
-    init: I,
-    f: F,
-) where
+pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(data: &mut [T], chunk_len: usize, init: I, f: F)
+where
     T: Send,
     S: Send,
     I: Fn() -> S + Sync + Send,
@@ -74,12 +70,8 @@ pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(
 }
 
 #[cfg(not(feature = "parallel"))]
-pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(
-    data: &mut [T],
-    chunk_len: usize,
-    init: I,
-    f: F,
-) where
+pub(crate) fn for_each_chunk_mut_init<T, S, I, F>(data: &mut [T], chunk_len: usize, init: I, f: F)
+where
     I: Fn() -> S,
     F: Fn(&mut S, usize, &mut [T]),
 {

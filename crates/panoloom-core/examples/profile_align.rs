@@ -115,7 +115,11 @@ fn main() {
     // timings alone cannot tell you whether it is any good.
     let out = dir.join("preview.png");
     let file = std::fs::File::create(&out).unwrap();
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), p.width as u32, p.height as u32);
+    let mut enc = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        p.width as u32,
+        p.height as u32,
+    );
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()
