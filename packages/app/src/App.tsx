@@ -139,6 +139,17 @@ function stitchEstimate(shots: number): string | null {
   if (shots < 90) return "a few minutes";
   if (shots < 160) return "30–60 minutes";
   return "over an hour";
+
+/** Engine stages may carry sub-progress as `base:detail` (bundle adjustment
+ *  reports `bundle-adjust:340/1000`). Render the friendly name plus the
+ *  detail verbatim, so a long stage shows movement instead of a frozen
+ *  label. */
+function describeStage(stage: string): string {
+  const cut = stage.indexOf(":");
+  const base = cut === -1 ? stage : stage.slice(0, cut);
+  const detail = cut === -1 ? "" : stage.slice(cut + 1);
+  const label = STAGE_LABELS[base] ?? base;
+  return detail ? `${label} ${detail}` : label;
 }
 
 const saveJpeg = (bytes: Uint8Array, name: string) =>
@@ -1136,7 +1147,7 @@ export function App() {
           <div className="working">
             <div className="step">
               {stage
-                ? `weaving · ${STAGE_LABELS[stage] ?? stage}`
+                ? `weaving · ${describeStage(stage)}`
                 : phase.kind === "aligning"
                   ? "weaving · features → matches → bundle adjustment"
                   : "rendering preview"}

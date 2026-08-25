@@ -1521,7 +1521,16 @@ pub fn bundle_adjust_ray(
     let mut err1 = vec![0.0f64; nerrs];
     let mut err2 = vec![0.0f64; nerrs];
 
+    // LM runs to `max_count` on hard problems — a 137-shot set uses all
+    // 1000 iterations — and each one is a Jacobian, a JtJ and a solve. With
+    // nothing reported, that is minutes to hours of a frozen label, which
+    // is indistinguishable from a hang and hides non-convergence entirely.
+    let mut announced = usize::MAX;
     loop {
+        if solver.iters != announced {
+            announced = solver.iters;
+            crate::progress::stage(&format!("bundle-adjust:{}/{}", announced, solver.max_count));
+        }
         let req = solver.update();
         cam_params.copy_from_slice(&solver.param);
         if !req.proceed || !req.want_err {
