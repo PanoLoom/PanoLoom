@@ -17,7 +17,9 @@ function post(msg: WorkerResponse, transfer: Transferable[] = []) {
   (self as unknown as Worker).postMessage(msg, transfer);
 }
 
-async function boot(maxThreads?: number): Promise<{ version: string; threads: number }> {
+async function boot(
+  maxThreads?: number,
+): Promise<{ version: string; threads: number; maxExportWidth: number }> {
   // maxThreads 0 forces the single-thread engine (?threads=0 diagnostics).
   if (
     maxThreads !== 0 &&
@@ -35,7 +37,11 @@ async function boot(maxThreads?: number): Promise<{ version: string; threads: nu
       await mod.initThreadPool(threads);
       engine = new mod.Engine() as unknown as Engine;
       reportStages(engine);
-      return { version: mod.engine_version(), threads };
+      return {
+        version: mod.engine_version(),
+        threads,
+        maxExportWidth: mod.max_export_width(),
+      };
     } catch (err) {
       console.warn("mt engine failed to start, using single-thread:", err);
       engine = null;
@@ -46,7 +52,11 @@ async function boot(maxThreads?: number): Promise<{ version: string; threads: nu
   await mod.default({ module_or_path: wasmUrl });
   engine = new mod.Engine();
   reportStages(engine);
-  return { version: mod.engine_version(), threads: 0 };
+  return {
+    version: mod.engine_version(),
+    threads: 0,
+    maxExportWidth: mod.max_export_width(),
+  };
 }
 
 /** Engine stage labels stream out as they start, so a multi-minute align or
@@ -60,8 +70,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   try {
     switch (msg.type) {
       case "init": {
-        const { version, threads } = await boot(msg.maxThreads);
-        post({ type: "ready", version, threads });
+        const { version, threads, maxExportWidth } = await boot(msg.maxThreads);
+        post({ type: "ready", version, threads, maxExportWidth });
         break;
       }
       case "addImage": {

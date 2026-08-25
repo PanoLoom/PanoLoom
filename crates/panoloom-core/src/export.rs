@@ -25,6 +25,24 @@ use crate::warp::{Border, Interp, PixelImage, SphericalWarper};
 const BAND_H: usize = 768;
 const BAND_PAD: usize = 256;
 
+/// Largest compose canvas (RGB + coverage) an export may allocate.
+///
+/// wasm32 tops out at a 4 GB address space, shared with the registration
+/// sources already resident, the full-resolution band sources, and the JPEG
+/// buffer — so the canvas gets a fraction of it. Native builds have room to
+/// spare and are limited only to keep the failure mode consistent.
+#[cfg(target_arch = "wasm32")]
+const MAX_CANVAS_BYTES: u64 = 1_250_000_000;
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CANVAS_BYTES: u64 = 32_000_000_000;
+
+/// Widest 2:1 panorama this build can compose, from [`MAX_CANVAS_BYTES`].
+/// The UI offers it so a set too large for full resolution still has a
+/// one-click best option rather than a guess.
+pub fn max_export_width() -> usize {
+    (((MAX_CANVAS_BYTES / 2) as f64).sqrt() as usize) & !1
+}
+
 pub struct ExportBand {
     pub y0: usize,
     pub y1: usize,
@@ -108,6 +126,27 @@ impl Exporter {
         });
         let canvas_w = (2.0 * std::f64::consts::PI * compose_scale).floor() as usize & !1;
         let canvas_h = canvas_w / 2;
+
+        // Refuse a canvas the address space cannot hold, BEFORE doing the
+        // seam stage and long before `composite_band` would allocate it.
+        //
+        // This is not hypothetical: 137 shots at 12MP wants a 50113x25057
+        // canvas — 4.7 GB of RGB plus coverage, against wasm32's 4 GB total.
+        // The allocation traps, and because wasm builds abort rather than
+        // unwind, the borrow guard on the exported object is never released:
+        // every later call then fails with "recursive use of an object
+        // detected", which says nothing about what actually went wrong.
+        let canvas_bytes = (canvas_w as u64) * (canvas_h as u64) * 4;
+        if canvas_bytes > MAX_CANVAS_BYTES {
+            // Largest even width whose 2:1 canvas fits the budget.
+            let fits = max_export_width();
+            return Err(format!(
+                "panorama would be {canvas_w}x{canvas_h} ({:.1} GB), over the {:.1} GB \
+                 this build can address — export at {fits} px or less",
+                canvas_bytes as f64 / (1u64 << 30) as f64,
+                MAX_CANVAS_BYTES as f64 / (1u64 << 30) as f64,
+            ));
+        }
 
         // Seam stage (shared with preview): gains + unrolled seams.
         let stage = seam_stage(&srcs, alignment, user_masks);

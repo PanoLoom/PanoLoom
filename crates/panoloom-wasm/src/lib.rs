@@ -19,6 +19,14 @@ pub fn engine_version() -> String {
     panoloom_core::VERSION.to_string()
 }
 
+/// Widest panorama this build can compose. Larger sets must export below
+/// it; the UI offers it as an option so the ceiling is reachable in one
+/// click instead of guessed at.
+#[wasm_bindgen]
+pub fn max_export_width() -> u32 {
+    panoloom_core::export::max_export_width() as u32
+}
+
 /// True when this module was built with the rayon thread pool.
 #[wasm_bindgen]
 pub fn engine_threaded() -> bool {

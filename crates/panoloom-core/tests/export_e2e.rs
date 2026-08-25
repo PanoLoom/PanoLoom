@@ -107,3 +107,57 @@ fn banded_export_ring() {
     std::fs::write(&out, &jpeg).unwrap();
     eprintln!("wrote {}", out.display());
 }
+
+/// A canvas larger than the address space must be refused up front, not
+/// discovered when `composite_band` tries to allocate it.
+///
+/// This is the failure a 137-shot 12MP set hits at full resolution: the
+/// panorama wants 50113x25057, i.e. 4.7 GB of RGB plus coverage, against
+/// wasm32's 4 GB total. The allocation traps, and because wasm aborts
+/// rather than unwinds, the borrow guard on the exported Engine is never
+/// released — so every LATER call reports "recursive use of an object
+/// detected which would lead to unsafe aliasing in Rust", which points
+/// nowhere near the real problem.
+#[test]
+fn export_refuses_a_canvas_over_the_memory_budget() {
+    let Some(dir) = dumps_dir("ring_kloppenheim_06") else {
+        eprintln!("SKIP: dumps not present");
+        return;
+    };
+    let sources: Vec<SourceImage> = (0..8)
+        .map(|i| SourceImage {
+            id: i as u32,
+            rgb: load_png(&dir.join(format!("work/img_{i:03}.png"))),
+            pose_prior: None,
+        })
+        .collect();
+    let alignment = align(&sources).expect("align");
+
+    let masks: Vec<Option<&panoloom_core::imgproc::GrayImage>> = vec![None; alignment.images.len()];
+    // Claim sources 100x their registration size so native resolution is far
+    // above any sane canvas, then ask for a width that cannot be held.
+    let full_sizes: Vec<(u32, u32, u32)> = alignment
+        .images
+        .iter()
+        .map(|ai| {
+            let s = sources.iter().find(|s| s.id == ai.id).unwrap();
+            (ai.id, s.rgb.width as u32 * 100, s.rgb.height as u32 * 100)
+        })
+        .collect();
+
+    let over = panoloom_core::export::max_export_width() * 8;
+    let err = Exporter::new(&sources, &alignment, &masks, &full_sizes, over)
+        .err()
+        .expect("an unholdable canvas must be refused, not attempted");
+    assert!(
+        err.contains("over the") && err.contains("export at"),
+        "error should name the ceiling and what to do: {err}"
+    );
+
+    // And a canvas inside the budget must still be accepted.
+    let ok = panoloom_core::export::max_export_width() / 4;
+    assert!(
+        Exporter::new(&sources, &alignment, &masks, &full_sizes, ok).is_ok(),
+        "a canvas within budget must still export"
+    );
+}

@@ -91,7 +91,13 @@ export interface AlignResult {
 }
 
 export type WorkerResponse =
-  | { type: "ready"; version: string; threads: number }
+  | {
+      type: "ready";
+      version: string;
+      threads: number;
+      /** Widest panorama this build can compose (memory ceiling). */
+      maxExportWidth: number;
+    }
   | { type: "imageAdded"; id: number }
   | { type: "imageRemoved"; id: number }
   | { type: "aligned"; result: AlignResult }
