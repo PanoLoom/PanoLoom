@@ -1192,6 +1192,8 @@ struct LevMarq {
     lambda_lg10: i32,
     max_count: usize,
     epsilon: f64,
+    /// Parameters pinned at their initial value — used to fix the gauge.
+    fixed: Vec<bool>,
     state: LmState,
     iters: usize,
 }
@@ -1223,6 +1225,7 @@ impl LevMarq {
             prev_err_norm: f64::MAX,
             err_norm: f64::MAX,
             lambda_lg10: -3,
+            fixed: vec![false; nparams],
             max_count: 1000, // MIN(MAX(1000,1),1000)
             epsilon: if nparams > LDLT_MIN_PARAMS {
                 PRACTICAL_PARAM_EPS
@@ -1341,6 +1344,31 @@ impl LevMarq {
         self.jtjv.copy_from_slice(&self.jterr);
         for i in 0..self.nparams {
             self.jtjn[i * self.nparams + i] *= 1.0 + lambda;
+        }
+        // Gauge fixing: zero a pinned parameter's row, column and gradient,
+        // leaving a unit diagonal. The system then decouples — the pinned
+        // parameter takes a zero step and every other equation is exactly
+        // the original one with that unknown removed. Cheaper than
+        // extracting a submatrix and it works for either solver.
+        if self.fixed.iter().any(|&f| f) {
+            let mut scale = 0.0f64;
+            for i in 0..self.nparams {
+                scale = scale.max(self.jtjn[i * self.nparams + i].abs());
+            }
+            if scale <= 0.0 {
+                scale = 1.0;
+            }
+            for i in 0..self.nparams {
+                if !self.fixed[i] {
+                    continue;
+                }
+                for k in 0..self.nparams {
+                    self.jtjn[i * self.nparams + k] = 0.0;
+                    self.jtjn[k * self.nparams + i] = 0.0;
+                }
+                self.jtjn[i * self.nparams + i] = scale;
+                self.jtjv[i] = 0.0;
+            }
         }
         let solved = self.nparams > LDLT_MIN_PARAMS && {
             // The ray cost is invariant to a global rotation, so JtJ is
