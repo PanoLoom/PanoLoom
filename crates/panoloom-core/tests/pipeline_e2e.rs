@@ -61,7 +61,7 @@ fn align_and_preview_report_their_stages() {
         .iter()
         .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
         .collect();
-    render_preview(&srcs, &alignment, &vec![None; srcs.len()], 512).expect("preview");
+    render_preview(&srcs, &alignment, &vec![None; srcs.len()], 512, None).expect("preview");
     drop(guard);
 
     let got = seen.borrow();
@@ -104,7 +104,7 @@ fn pipeline_align_and_preview_ring() {
         .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
         .collect();
     let preview =
-        render_preview(&srcs, &alignment, &vec![None; srcs.len()], 1024).expect("preview");
+        render_preview(&srcs, &alignment, &vec![None; srcs.len()], 1024, None).expect("preview");
     assert!(preview.width <= 1024);
     assert_eq!(preview.rgba.len(), preview.width * preview.height * 4);
 
@@ -130,4 +130,41 @@ fn pipeline_align_and_preview_ring() {
         frac * 100.0
     );
     assert!(frac > 0.95, "ring should cover nearly all columns: {frac}");
+}
+
+/// Reusing a `SeamStage` must change nothing about the result.
+///
+/// The preview and every export both need it, and it costs minutes on a
+/// large set — ~19 of the 21 minutes a 137-shot export was taking. Sharing
+/// it is only safe if it is genuinely the same computation, so this pins
+/// byte-equality rather than trusting that it is.
+#[test]
+fn a_reused_seam_stage_gives_an_identical_preview() {
+    let Some(dir) = dumps_dir("ring_kloppenheim_06") else {
+        eprintln!("SKIP: dumps not present");
+        return;
+    };
+    let sources = ring_sources(&dir);
+    let alignment = align(&sources).expect("align");
+    let srcs: Vec<&PixelImage> = alignment
+        .images
+        .iter()
+        .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
+        .collect();
+    let masks = vec![None; srcs.len()];
+
+    let fresh = render_preview(&srcs, &alignment, &masks, 768, None).expect("preview");
+    let stage = panoloom_core::pipeline::seam_stage(&srcs, &alignment, &masks);
+    let reused = render_preview(&srcs, &alignment, &masks, 768, Some(&stage)).expect("preview");
+
+    assert_eq!((fresh.width, fresh.height), (reused.width, reused.height));
+    assert_eq!(
+        fresh.rgba, reused.rgba,
+        "a reused seam stage changed the panorama"
+    );
+
+    // Reusing it twice must also be stable — the stage is borrowed, not
+    // consumed, and must not be mutated in passing.
+    let again = render_preview(&srcs, &alignment, &masks, 768, Some(&stage)).expect("preview");
+    assert_eq!(fresh.rgba, again.rgba, "reuse is not idempotent");
 }

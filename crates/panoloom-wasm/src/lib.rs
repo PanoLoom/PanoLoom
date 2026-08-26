@@ -5,7 +5,7 @@
 //! out); structured results cross as JSON strings.
 
 use panoloom_core::export::Exporter;
-use panoloom_core::pipeline::{align, render_preview, Alignment, SourceImage};
+use panoloom_core::pipeline::{align, render_preview, Alignment, SeamStage, SourceImage};
 use panoloom_core::warp::PixelImage;
 use wasm_bindgen::prelude::*;
 
@@ -44,6 +44,16 @@ pub struct Engine {
     user_masks: std::collections::HashMap<u32, panoloom_core::imgproc::GrayImage>,
     /// Called with a stage label whenever a long call enters a new stage.
     progress: Option<js_sys::Function>,
+    /// Graph-cut seams and gains, with a fingerprint of the inputs that
+    /// produced them. Both the preview and every export need this and it
+    /// takes minutes on a large set, so it is computed once per distinct
+    /// input. Keyed on a hash of the inputs rather than invalidated by hand:
+    /// eight methods mutate state that feeds it, and a stale seam produces a
+    /// wrong panorama that still looks plausible.
+    seam_cache: Option<(u64, SeamStage)>,
+    /// Bumped when the source set changes. Source PIXELS are too large to
+    /// hash on every call; the two methods that can change them are not.
+    sources_gen: u64,
 }
 
 impl Engine {
@@ -58,6 +68,78 @@ impl Engine {
                 let _ = cb.call1(&JsValue::NULL, &JsValue::from_str(stage));
             },
         )))
+    }
+
+    /// Hash of everything `seam_stage` reads. Anything that changes the
+    /// seams must change this, so it covers the alignment in full, every
+    /// user mask byte for byte, and a counter standing in for the source
+    /// pixels.
+    fn seam_fingerprint(&self, alignment: &Alignment) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.sources_gen.hash(&mut h);
+        alignment.warped_image_scale.to_bits().hash(&mut h);
+        for v in [
+            alignment.lens.a,
+            alignment.lens.b,
+            alignment.lens.c,
+            alignment.lens.d,
+            alignment.lens.e,
+        ] {
+            v.to_bits().hash(&mut h);
+        }
+        for ai in &alignment.images {
+            ai.id.hash(&mut h);
+            ai.rescued.hash(&mut h);
+            let c = &ai.camera;
+            for v in [c.focal, c.aspect, c.ppx, c.ppy] {
+                v.to_bits().hash(&mut h);
+            }
+            for row in &c.r {
+                for v in row {
+                    v.to_bits().hash(&mut h);
+                }
+            }
+            // Masks are keyed by id, so hash them alongside their image.
+            match self.user_masks.get(&ai.id) {
+                Some(m) => {
+                    1u8.hash(&mut h);
+                    m.width.hash(&mut h);
+                    m.height.hash(&mut h);
+                    m.data.hash(&mut h);
+                }
+                None => 0u8.hash(&mut h),
+            }
+        }
+        h.finish()
+    }
+
+    /// Ensures `seam_cache` holds the stage for the current inputs.
+    fn refresh_seam_cache(&mut self) -> Result<(), JsError> {
+        let alignment = self
+            .alignment
+            .as_ref()
+            .ok_or_else(|| JsError::new("align() has not succeeded yet"))?;
+        let fp = self.seam_fingerprint(alignment);
+        if self.seam_cache.as_ref().map(|(f, _)| *f) == Some(fp) {
+            return Ok(());
+        }
+        let masks = self.ordered_masks(alignment);
+        let srcs: Vec<&PixelImage> = alignment
+            .images
+            .iter()
+            .map(|ai| {
+                &self
+                    .sources
+                    .iter()
+                    .find(|s| s.id == ai.id)
+                    .expect("aligned id present")
+                    .rgb
+            })
+            .collect();
+        let stage = panoloom_core::pipeline::seam_stage(&srcs, alignment, &masks);
+        self.seam_cache = Some((fp, stage));
+        Ok(())
     }
 
     /// User masks ordered like `alignment.images` (None where unset).
@@ -165,6 +247,8 @@ impl Engine {
             exporter: None,
             user_masks: std::collections::HashMap::new(),
             progress: None,
+            seam_cache: None,
+            sources_gen: 0,
         }
     }
 
@@ -178,6 +262,10 @@ impl Engine {
         widths: Vec<u32>,
         heights: Vec<u32>,
     ) -> Result<String, JsError> {
+        // Reuses the preview's seams when nothing relevant has changed —
+        // graph-cut is ~19 min on a 137-shot set and every export was
+        // repeating it.
+        self.refresh_seam_cache()?;
         let alignment = self
             .alignment
             .as_ref()
@@ -198,6 +286,7 @@ impl Engine {
             &masks,
             &full_sizes,
             target_width as usize,
+            self.seam_cache.as_ref().map(|(_, s)| s),
         )
         .map_err(|e| JsError::new(&e))?;
 
@@ -308,6 +397,7 @@ impl Engine {
         if self.sources.iter().any(|s| s.id == id) {
             return Err(JsError::new("duplicate image id"));
         }
+        self.sources_gen += 1;
         let prior = match pose_prior {
             Some(v) if v.len() == 3 => Some([v[0], v[1], v[2]]),
             Some(_) => return Err(JsError::new("pose_prior must have 3 elements")),
@@ -327,6 +417,7 @@ impl Engine {
     }
 
     pub fn remove_image(&mut self, id: u32) {
+        self.sources_gen += 1;
         self.sources.retain(|s| s.id != id);
         self.user_masks.remove(&id);
         self.alignment = None;
@@ -521,8 +612,9 @@ impl Engine {
 
     /// Renders the blended preview as a full equirectangular RGBA canvas.
     /// Requires a prior successful `align()`.
-    pub fn render_preview(&self, max_width: u32) -> Result<PreviewImage, JsError> {
+    pub fn render_preview(&mut self, max_width: u32) -> Result<PreviewImage, JsError> {
         let _progress = self.report_progress();
+        self.refresh_seam_cache()?;
         let alignment = self
             .alignment
             .as_ref()
@@ -544,6 +636,7 @@ impl Engine {
             alignment,
             &self.ordered_masks(alignment),
             max_width as usize,
+            self.seam_cache.as_ref().map(|(_, s)| s),
         )
         .map_err(|e| JsError::new(&e))?;
         Ok(PreviewImage {

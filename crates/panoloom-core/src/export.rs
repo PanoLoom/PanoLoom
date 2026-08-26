@@ -17,7 +17,9 @@ use crate::blend::{num_bands_for, result_roi, MultiBandBlender};
 use crate::camera::CameraParams;
 use crate::exposure::{GainMap, RgbImage};
 use crate::imgproc::{resize_bilinear_rows, GrayImage};
-use crate::pipeline::{camera_k_scaled, dilate3, seam_stage, snap_scale, Alignment, SourceImage};
+use crate::pipeline::{
+    camera_k_scaled, dilate3, seam_stage, snap_scale, Alignment, SeamStage, SourceImage,
+};
 use crate::warp::{Border, Interp, PixelImage, SphericalWarper};
 
 /// Band height in canvas rows (before padding). Padding must exceed the
@@ -88,12 +90,16 @@ impl Exporter {
     /// `reg_sources` are the registration-scale images already in the
     /// engine (for the seam stage); `full_sizes` maps every aligned id to
     /// its ORIGINAL pixel dimensions; `target_width` caps the canvas.
+    /// `cached_stage` is a [`SeamStage`] already computed for exactly these
+    /// inputs, or None to compute one. Graph-cut seams take minutes on a
+    /// large set and a preview has usually already paid for them.
     pub fn new(
         reg_sources: &[SourceImage],
         alignment: &Alignment,
         user_masks: &[Option<&GrayImage>],
         full_sizes: &[(u32, u32, u32)],
         target_width: usize,
+        cached_stage: Option<&SeamStage>,
     ) -> Result<Self, String> {
         let n = alignment.images.len();
         let mut srcs: Vec<&PixelImage> = Vec::with_capacity(n);
@@ -149,7 +155,14 @@ impl Exporter {
         }
 
         // Seam stage (shared with preview): gains + unrolled seams.
-        let stage = seam_stage(&srcs, alignment, user_masks);
+        let computed;
+        let stage = match cached_stage {
+            Some(s) => s,
+            None => {
+                computed = seam_stage(&srcs, alignment, user_masks);
+                &computed
+            }
+        };
         let seam_masks_dilated: Vec<GrayImage> = stage.e_seam_masks.iter().map(dilate3).collect();
 
         // Compose-scale ROIs per entry. K multiplier for a full-res source:

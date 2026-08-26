@@ -109,8 +109,8 @@ fn main() {
     let ordered: Vec<&PixelImage> = alignment.images.iter().map(|ai| by_id[&ai.id]).collect();
 
     let t = Instant::now();
-    let p =
-        render_preview(&ordered, &alignment, &vec![None; ordered.len()], 4096).expect("preview");
+    let p = render_preview(&ordered, &alignment, &vec![None; ordered.len()], 4096, None)
+        .expect("preview");
     eprintln!(
         "preview total: {:.0}ms ({}x{})",
         t.elapsed().as_secs_f64() * 1e3,
