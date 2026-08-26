@@ -61,6 +61,7 @@ fn banded_export_ring() {
         &vec![None; alignment.images.len()],
         &full_sizes,
         16384,
+        None,
     )
     .expect("exporter");
     let (cw, ch) = exporter.canvas_size();
@@ -146,7 +147,7 @@ fn export_refuses_a_canvas_over_the_memory_budget() {
         .collect();
 
     let over = panoloom_core::export::max_export_width() * 8;
-    let err = Exporter::new(&sources, &alignment, &masks, &full_sizes, over)
+    let err = Exporter::new(&sources, &alignment, &masks, &full_sizes, over, None)
         .err()
         .expect("an unholdable canvas must be refused, not attempted");
     assert!(
@@ -157,7 +158,69 @@ fn export_refuses_a_canvas_over_the_memory_budget() {
     // And a canvas inside the budget must still be accepted.
     let ok = panoloom_core::export::max_export_width() / 4;
     assert!(
-        Exporter::new(&sources, &alignment, &masks, &full_sizes, ok).is_ok(),
+        Exporter::new(&sources, &alignment, &masks, &full_sizes, ok, None).is_ok(),
         "a canvas within budget must still export"
     );
+}
+
+/// The export must plan the same panorama whether it computes the seam
+/// stage or is handed one. Sharing it with the preview is the difference
+/// between a 21-minute export and a 2-minute one, so the equivalence is
+/// worth pinning rather than assuming.
+#[test]
+fn a_reused_seam_stage_plans_the_same_export() {
+    let Some(dir) = dumps_dir("ring_kloppenheim_06") else {
+        eprintln!("SKIP: dumps not present");
+        return;
+    };
+    let sources: Vec<SourceImage> = (0..8)
+        .map(|i| SourceImage {
+            id: i as u32,
+            rgb: load_png(&dir.join(format!("work/img_{i:03}.png"))),
+            pose_prior: None,
+        })
+        .collect();
+    let alignment = align(&sources).expect("align");
+    let masks: Vec<Option<&panoloom_core::imgproc::GrayImage>> = vec![None; alignment.images.len()];
+    let full_sizes: Vec<(u32, u32, u32)> = alignment
+        .images
+        .iter()
+        .map(|ai| {
+            let s = sources.iter().find(|s| s.id == ai.id).unwrap();
+            (ai.id, s.rgb.width as u32, s.rgb.height as u32)
+        })
+        .collect();
+
+    let srcs: Vec<&panoloom_core::warp::PixelImage> = alignment
+        .images
+        .iter()
+        .map(|ai| &sources.iter().find(|s| s.id == ai.id).unwrap().rgb)
+        .collect();
+    let stage = panoloom_core::pipeline::seam_stage(&srcs, &alignment, &masks);
+
+    let fresh =
+        Exporter::new(&sources, &alignment, &masks, &full_sizes, 2048, None).expect("exporter");
+    let reused = Exporter::new(
+        &sources,
+        &alignment,
+        &masks,
+        &full_sizes,
+        2048,
+        Some(&stage),
+    )
+    .expect("exporter");
+
+    assert_eq!(fresh.canvas_size(), reused.canvas_size(), "canvas differs");
+    assert_eq!(fresh.crop(), reused.crop(), "crop differs");
+    let a: Vec<_> = fresh
+        .bands()
+        .iter()
+        .map(|b| (b.y0, b.y1, b.needed.clone()))
+        .collect();
+    let b: Vec<_> = reused
+        .bands()
+        .iter()
+        .map(|b| (b.y0, b.y1, b.needed.clone()))
+        .collect();
+    assert_eq!(a, b, "band plan differs with a reused seam stage");
 }

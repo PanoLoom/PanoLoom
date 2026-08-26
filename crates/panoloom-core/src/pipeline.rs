@@ -481,7 +481,13 @@ pub(crate) fn camera_k_scaled(c: &CameraParams, m: f64) -> [[f32; 3]; 3] {
 /// Output of the seam-scale stage shared by preview and export: gains fed
 /// from the original layout, graph-cut seams computed over the UNROLLED
 /// layout (wrap-crossing images duplicated one period right).
-pub(crate) struct SeamStage {
+/// Gains and graph-cut seams, computed at seam scale.
+///
+/// Public because it is expensive — minutes on a large set — and identical
+/// for a given (sources, alignment, masks). A caller that renders a preview
+/// and then exports would otherwise pay for it twice; both entry points
+/// accept one that has already been computed.
+pub struct SeamStage {
     /// (source/aligned index, duplicated one period to the right?)
     pub entries: Vec<(usize, bool)>,
     pub compensator: BlocksGainCompensator,
@@ -492,7 +498,7 @@ pub(crate) struct SeamStage {
 pub const MASK_EXCLUDE: u8 = 1;
 pub const MASK_PREFER: u8 = 2;
 
-pub(crate) fn seam_stage(
+pub fn seam_stage(
     sources: &[&PixelImage],
     alignment: &Alignment,
     user_masks: &[Option<&GrayImage>],
@@ -626,11 +632,17 @@ pub struct Preview {
 /// Renders a blended preview onto a FULL equirectangular canvas so a 360°
 /// viewer can consume it directly. `sources` must correspond 1:1 with
 /// `alignment.images` (already subset by the caller via ids).
+///
+/// `cached_stage` is a [`SeamStage`] already computed for exactly these
+/// inputs, or None to compute one. A mismatched stage yields a wrong
+/// panorama, so a caller that caches must key it on the inputs rather than
+/// on remembering to invalidate.
 pub fn render_preview(
     sources: &[&PixelImage],
     alignment: &Alignment,
     user_masks: &[Option<&GrayImage>],
     max_width: usize,
+    cached_stage: Option<&SeamStage>,
 ) -> Result<Preview, String> {
     let n = alignment.images.len();
     if sources.len() != n {
@@ -648,9 +660,16 @@ pub fn render_preview(
     };
     let compose_scale = snap_scale(compose_scale);
 
-    let stage = stage_timed!("seam-stage", seam_stage(sources, alignment, user_masks));
+    let computed;
+    let stage = match cached_stage {
+        Some(s) => s,
+        None => {
+            computed = stage_timed!("seam-stage", seam_stage(sources, alignment, user_masks));
+            &computed
+        }
+    };
     let (entries, compensator, e_seam_masks) =
-        (stage.entries, stage.compensator, stage.e_seam_masks);
+        (&stage.entries, &stage.compensator, &stage.e_seam_masks);
 
     // --- stage 2: compose scale — warp sharp, apply gains, blend ---
     let k_for = camera_k_scaled;
